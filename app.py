@@ -165,6 +165,7 @@ def resolve_ticker_advanced(cusip, name):
         return found_tk
     return "-"
 
+@st.cache_data(ttl=43200)
 def get_filings(cik):
     time.sleep(0.12)
     url = f"https://data.sec.gov/submissions/CIK{str(cik).zfill(10)}.json"
@@ -186,6 +187,7 @@ def get_filings(cik):
     except Exception:
         return []
 
+@st.cache_data(ttl=43200)
 def get_holdings(cik, acc):
     time.sleep(0.12)
     acc_clean = acc.replace("-", "")
@@ -287,13 +289,11 @@ def calc_score(df, sector_neutral=False):
     raw_smart = 0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]
     d["SmartScore"] = raw_smart.round(1).fillna(50.0)
 
-    # ⭐️ 핵심 변경: 주가 미조회 종목은 추천 시그널 부여 원천 차단
     sigs = []
     for _, r in d.iterrows():
         p_val = r["Price_Val"]
         tk = r["Ticker"]
         
-        # 주가나 티커가 없으면 추천 대상에서 배제
         if p_val <= 0 or tk == "-":
             sigs.append("⚪ NO_DATA")
             continue
@@ -313,121 +313,39 @@ def calc_score(df, sector_neutral=False):
     d["Rank"] = d["SmartScore"].rank(ascending=False, method="min").fillna(len(d)).astype(int)
     return d.sort_values(by="Rank").reset_index(drop=True)
 
-@st.cache_data(ttl=43200, show_spinner=False)
-def run_quant_engine(funds_dict_items, top_n, sec_neutral):
-    curr_records = []
-    prev_records = {}
-    filing_dates = []
-    
-    for name, cik in funds_dict_items:
-        f = get_filings(cik)
-        if not f:
-            continue
-        filing_dates.append(f[0]["date"])
-        h1 = get_holdings(cik, f[0]["acc"])
-        for cusip, val in h1.items():
-            curr_records.append({
-                "cik": cik, "fund": name, "cusip": cusip,
-                "name": val["name"], "val": val["val"], "shares": val["shares"],
-                "f_date": f[0]["date"]
-            })
-        if len(f) > 1:
-            h2 = get_holdings(cik, f[1]["acc"])
-            for cusip, val in h2.items():
-                prev_records[(cik, cusip)] = val
-    
-    tot = {}
-    for r in curr_records:
-        k = (r["cik"], r["cusip"])
-        c = r["cusip"]
-        if k not in prev_records:
-            diff_v = r["val"]
-            diff_s = r["shares"]
-        else:
-            p = prev_records[k]
-            diff_v = max(0, r["val"] - p["val"]) if r["shares"] > p["shares"] else 0
-            diff_s = max(0, r["shares"] - p["shares"]) if r["shares"] > p["shares"] else 0
-        
-        if diff_v > 0 or k not in prev_records:
-            if c not in tot:
-                tot[c] = {
-                    "name": r["name"],
-                    "funds": set(),
-                    "inflow": 0,
-                    "shares": 0,
-                    "f_date": r["f_date"],
-                    "details": []
-                }
-            tot[c]["funds"].add(r["fund"])
-            tot[c]["inflow"] += diff_v
-            tot[c]["shares"] += diff_s
-            tot[c]["details"].append({
-                "fund": r["fund"],
-                "type": "신규" if k not in prev_records else "확대",
-                "shares": diff_s,
-                "val_m": round(diff_v / 1000.0, 1)
-            })
-    
-    ranked = sorted(
-        tot.items(),
-        key=lambda x: (len(x[1]["funds"]), x[1]["inflow"]),
-        reverse=True
-    )[:top_n]
-    
-    data_rows = []
-    for cusip, d in ranked:
-        tk = resolve_ticker_advanced(cusip, d["name"])
-        rel_ret, dist_52w, ad_pass, cur_p = 0.0, 0.0, False, 0.0
-        price_chg, pct_chg = 0.0, 0.0
-
-        if tk != "-":
-            try:
-                t = yf.Ticker(tk)
-                hist = t.history(period="6mo", timeout=3)
-                if not hist.empty and len(hist) > 10:
-                    cur_p = float(hist["Close"].iloc[-1])
-                    max_p = float(hist["High"].max())
-                    start_p = float(hist["Close"].iloc[0])
-                    
-                    dist_52w = ((cur_p - max_p) / max_p) * 100.0 if max_p > 0 else 0.0
-                    rel_ret = ((cur_p - start_p) / start_p) * 100.0 if start_p > 0 else 0.0
-                    
-                    target_dt = pd.to_datetime(d["f_date"]).tz_localize(hist.index.tz)
-                    hist_since = hist[hist.index >= target_dt]
-                    base_p = float(hist_since["Close"].iloc[0]) if not hist_since.empty else start_p
-                    
-                    price_chg = cur_p - base_p
-                    pct_chg = (price_chg / base_p) * 100.0 if base_p > 0 else 0.0
-                    
-                    denom = (hist["High"] - hist["Low"]).replace(0, 1e-9)
-                    clv = ((hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])) / denom
-                    ad = (clv * hist["Volume"]).cumsum()
-                    ad_pass = bool(ad.iloc[-1] >= ad.iloc[-10])
-            except Exception:
-                pass
-        
-        data_rows.append({
-            "CUSIP": cusip,
-            "Ticker": tk,
-            "Name": d["name"],
-            "Sector": "Tech/Aerospace" if tk in ["STX", "FDX", "SPCX", "NVDA", "AAPL", "MSFT", "AVGO", "PLTR"] else "General",
-            "Fund_Count": len(d["funds"]),
-            "Inflow_M": round(d["inflow"] / 1000.0, 1),
-            "Shares_Sum": d["shares"],
-            "Rel_Return": round(rel_ret, 1),
-            "Dist_52W": round(dist_52w, 1),
-            "AD_Pass": ad_pass,
-            "Price_Val": round(cur_p, 2),
-            "Price_Chg": round(price_chg, 2),
-            "Pct_Chg": round(pct_chg, 2),
-            "details": d["details"]
-        })
-    
-    return calc_score(pd.DataFrame(data_rows), sector_neutral=sec_neutral)
-
 # --- UI 레이아웃 ---
 st.title("🎯 SEC 13F 스마트스코어 & 시그널 v1.5")
 st.caption("월가 Top 50 기관 전수 분석 | 3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 검증 | 섹터 중립화")
+
+# 💡 상단 가이드 Expander (누구나 직관적으로 이해할 수 있는 설명 추가)
+with st.expander("📖 스마트스코어 & M1 · M2 · M3 팩터 직관 가이드 (클릭하여 펼치기)", expanded=False):
+    st.markdown(
+        """
+        ### 1. 스마트스코어(SmartScore)란?
+        * **"월가 큰손들이 대량 매집했는데, 아직 주가가 덜 오른 저평가 종목"**을 발굴하는 종합 점수입니다 (100점 만점).
+        * **공식**: $\\text{SmartScore} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$
+        * 모든 모델은 **기관 수급(55%)** + **가격 저평가/소외도(45%)**의 황금 비율로 결합됩니다.
+
+        ---
+        ### 2. 세부 팩터 모델(M1, M2, M3)의 차이점
+        * **M1 (선형 스케일 모델 / 20%)**:  
+          * 최솟값 0점, 최댓값 100점으로 정직하게 비례 환산합니다.  
+          * 👉 **특징**: 유입 금액이나 매수 주식수가 압도적으로 큰 초대형주에 가점을 부여합니다.
+        * **M2 (백분위 순위 모델 / 40%)**:  
+          * 금액 차이와 상관없이 **전체 종목 중 몇 등인지(Percentile)**로 점수를 매깁니다.  
+          * 👉 **특징**: 특정 종목 하나의 수급이 비정상적으로 튀는 이상치(Outlier) 왜곡을 방지합니다.
+        * **M3 (Z-Score 정규화 모델 / 40%)**:  
+          * 통계적 표준편차($Z$-값)를 구해 정규분포 확률(CDF)로 변환합니다.  
+          * 👉 **특징**: 평균 대비 얼마나 이례적으로 스마트머니가 집중되었는지를 정밀 포착합니다.
+
+        ---
+        ### 3. 투자 시그널 판정 기준
+        * 🟢 **STRONG_BUY**: 점수 75점 이상 + 차트 매집(A/D Line) 확인 $\\rightarrow$ **적극 매수 검토**
+        * 🔵 **ACCUMULATE**: 점수 60점 이상 + 차트 매집(A/D Line) 확인 $\\rightarrow$ **분할 매수**
+        * 🟡 **WATCH_LAG**: 점수는 60점 이상이나, 최근 차트에서 매도 압력 감지 $\\rightarrow$ **관망 (바닥 확인 후 진입)**
+        * ⚪ **NO_DATA**: 비상장/채권/시세 미조회 종목 (추천 제외)
+        """
+    )
 
 if "custom_funds" not in st.session_state:
     st.session_state["custom_funds"] = dict(DEFAULT_FUNDS)
@@ -477,35 +395,170 @@ if run_btn:
     if not funds_to_analyze:
         st.error("최소 1개 이상의 기관을 선택해야 합니다.")
     else:
-        with st.spinner(f"선택된 {len(funds_to_analyze)}개 기관 수급 및 시세 분석 중... (최초 1회 실행 후 캐시 저장)"):
-            tup_items = tuple(funds_to_analyze.items())
-            res = run_quant_engine(tup_items, top_n, sec_neutral)
-            st.session_state["result_df"] = res
-            st.session_state["selected_ticker"] = res["Ticker"].iloc[0] if not res.empty else None
+        status_box = st.empty()
+        prog = st.progress(0.0)
+        
+        curr_records = []
+        prev_records = {}
+        filing_dates = []
+        
+        fund_items = list(funds_to_analyze.items())
+        tot_cnt = len(fund_items)
+        
+        for idx, (name, cik) in enumerate(fund_items):
+            status_box.markdown(f"📥 **[1단계: 공시 수집 {idx+1}/{tot_cnt}]** `{name}` 최신 13F 파싱 중...")
+            prog.progress(int(((idx + 1) / tot_cnt) * 50))
+            
+            f = get_filings(cik)
+            if not f:
+                continue
+            filing_dates.append(f[0]["date"])
+            h1 = get_holdings(cik, f[0]["acc"])
+            for cusip, val in h1.items():
+                curr_records.append({
+                    "cik": cik, "fund": name, "cusip": cusip,
+                    "name": val["name"], "val": val["val"], "shares": val["shares"],
+                    "f_date": f[0]["date"]
+                })
+            if len(f) > 1:
+                h2 = get_holdings(cik, f[1]["acc"])
+                for cusip, val in h2.items():
+                    prev_records[(cik, cusip)] = val
+        
+        status_box.markdown("📊 **기관 수급 변화량 및 순유입액 집계 중...**")
+        prog.progress(55)
+        
+        tot = {}
+        for r in curr_records:
+            k = (r["cik"], r["cusip"])
+            c = r["cusip"]
+            if k not in prev_records:
+                diff_v = r["val"]
+                diff_s = r["shares"]
+            else:
+                p = prev_records[k]
+                diff_v = max(0, r["val"] - p["val"]) if r["shares"] > p["shares"] else 0
+                diff_s = max(0, r["shares"] - p["shares"]) if r["shares"] > p["shares"] else 0
+            
+            if diff_v > 0 or k not in prev_records:
+                if c not in tot:
+                    tot[c] = {
+                        "name": r["name"],
+                        "funds": set(),
+                        "inflow": 0,
+                        "shares": 0,
+                        "f_date": r["f_date"],
+                        "details": []
+                    }
+                tot[c]["funds"].add(r["fund"])
+                tot[c]["inflow"] += diff_v
+                tot[c]["shares"] += diff_s
+                tot[c]["details"].append({
+                    "fund": r["fund"],
+                    "type": "신규" if k not in prev_records else "확대",
+                    "shares": diff_s,
+                    "val_m": round(diff_v / 1000.0, 1)
+                })
+        
+        ranked = sorted(
+            tot.items(),
+            key=lambda x: (len(x[1]["funds"]), x[1]["inflow"]),
+            reverse=True
+        )[:top_n]
+        
+        data_rows = []
+        tot_stocks = len(ranked)
+        
+        for s_idx, (cusip, d) in enumerate(ranked):
+            tk = resolve_ticker_advanced(cusip, d["name"])
+            status_box.markdown(f"📈 **[2단계: 시세/팩터 검증 {s_idx+1}/{tot_stocks}]** `{d['name'][:25]}` (티커: `{tk}`) 데이터 분석 중...")
+            prog.progress(55 + int(((s_idx + 1) / max(tot_stocks, 1)) * 45))
+            
+            rel_ret, dist_52w, ad_pass, cur_p = 0.0, 0.0, False, 0.0
+            price_chg, pct_chg = 0.0, 0.0
 
-if "result_df" not in st.session_state and funds_to_analyze:
-    tup_items = tuple(funds_to_analyze.items())
-    try:
-        cached_res = run_quant_engine(tup_items, top_n, sec_neutral)
-        if not cached_res.empty:
-            st.session_state["result_df"] = cached_res
-            st.session_state["selected_ticker"] = cached_res["Ticker"].iloc[0]
-    except Exception:
-        pass
+            if tk != "-":
+                try:
+                    t = yf.Ticker(tk)
+                    hist = t.history(period="6mo", timeout=3)
+                    if not hist.empty and len(hist) > 10:
+                        cur_p = float(hist["Close"].iloc[-1])
+                        max_p = float(hist["High"].max())
+                        start_p = float(hist["Close"].iloc[0])
+                        
+                        dist_52w = ((cur_p - max_p) / max_p) * 100.0 if max_p > 0 else 0.0
+                        rel_ret = ((cur_p - start_p) / start_p) * 100.0 if start_p > 0 else 0.0
+                        
+                        target_dt = pd.to_datetime(d["f_date"]).tz_localize(hist.index.tz)
+                        hist_since = hist[hist.index >= target_dt]
+                        base_p = float(hist_since["Close"].iloc[0]) if not hist_since.empty else start_p
+                        
+                        price_chg = cur_p - base_p
+                        pct_chg = (price_chg / base_p) * 100.0 if base_p > 0 else 0.0
+                        
+                        denom = (hist["High"] - hist["Low"]).replace(0, 1e-9)
+                        clv = ((hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])) / denom
+                        ad = (clv * hist["Volume"]).cumsum()
+                        ad_pass = bool(ad.iloc[-1] >= ad.iloc[-10])
+                except Exception:
+                    pass
+            
+            data_rows.append({
+                "CUSIP": cusip,
+                "Ticker": tk,
+                "Name": d["name"],
+                "Sector": "Tech/Aerospace" if tk in ["STX", "FDX", "SPCX", "NVDA", "AAPL", "MSFT", "AVGO", "PLTR"] else "General",
+                "Fund_Count": len(d["funds"]),
+                "Inflow_M": round(d["inflow"] / 1000.0, 1),
+                "Shares_Sum": d["shares"],
+                "Rel_Return": round(rel_ret, 1),
+                "Dist_52W": round(dist_52w, 1),
+                "AD_Pass": ad_pass,
+                "Price_Val": round(cur_p, 2),
+                "Price_Chg": round(price_chg, 2),
+                "Pct_Chg": round(pct_chg, 2),
+                "details": d["details"]
+            })
+        
+        status_box.markdown("✨ **스마트스코어 앙상블 및 랭킹 정렬 완료!**")
+        prog.progress(100)
+        time.sleep(0.5)
+        
+        prog.empty()
+        status_box.empty()
+        
+        res_df = calc_score(pd.DataFrame(data_rows), sector_neutral=sec_neutral)
+        st.session_state["result_df"] = res_df
+        st.session_state["selected_ticker"] = res_df["Ticker"].iloc[0] if not res_df.empty else None
 
 if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     df_show = st.session_state["result_df"].copy()
     
-    # 주가 조회된 종목만 필터링 옵션
     if valid_price_only:
         df_show = df_show[df_show["Price_Val"] > 0].reset_index(drop=True)
 
-    # A/D Line 필터링 옵션
     if pass_only:
         df_show = df_show[df_show["AD_Pass"] == True].reset_index(drop=True)
         
     st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
-    st.caption("💡 **표에서 확인하고 싶은 기업의 행을 클릭**하면 아래에 상세 팩터 분석 및 매수 기관 정보가 즉시 나타납니다.")
+    st.caption("💡 **표에서 확인하고 싶은 기업의 행을 터치/클릭**하면 바로 아래에 상세 팩터 분석 및 매수 기관 정보가 연동됩니다.")
+
+    # 🎨 무한 렌더링 없는 안전한 HTML 색상 포맷터 (+는 빨강, -는 파랑)
+    def fmt_price_chg_html(v):
+        if pd.isna(v) or v == 0.0:
+            return "$0.00"
+        elif v > 0:
+            return f'<span style="color:#E03131; font-weight:bold;">▲ +${v:.2f}</span>'
+        else:
+            return f'<span style="color:#1971C2; font-weight:bold;">▼ -${abs(v):.2f}</span>'
+
+    def fmt_pct_chg_html(v):
+        if pd.isna(v) or v == 0.0:
+            return "0.00%"
+        elif v > 0:
+            return f'<span style="color:#E03131; font-weight:bold;">▲ +{v:.2f}%</span>'
+        else:
+            return f'<span style="color:#1971C2; font-weight:bold;">▼ -{abs(v):.2f}%</span>'
 
     table_df = df_show[[
         "Rank", "Ticker", "Name", "SmartScore", "M1", "M2", "M3",
@@ -518,6 +571,10 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         "투자시그널", "현재가($)", "공시후변동($)", "공시후변동률(%)",
         "기관수", "유입액($M)"
     ]
+
+    # 색상 적용된 텍스트로 치환
+    table_df["공시후변동($)"] = table_df["공시후변동($)"].apply(fmt_price_chg_html)
+    table_df["공시후변동률(%)"] = table_df["공시후변동률(%)"].apply(fmt_pct_chg_html)
 
     event = st.dataframe(
         table_df,
@@ -532,8 +589,8 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
             "M2": st.column_config.NumberColumn(format="%.1f"),
             "M3": st.column_config.NumberColumn(format="%.1f"),
             "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
-            "공시후변동($)": st.column_config.NumberColumn(format="+$%.2f"),
-            "공시후변동률(%)": st.column_config.NumberColumn(format="+%.2f%%"),
+            "공시후변동($)": st.column_config.TextColumn(),
+            "공시후변동률(%)": st.column_config.TextColumn(),
             "기관수": st.column_config.NumberColumn(format="%d 개"),
             "유입액($M)": st.column_config.NumberColumn(format="$%.1f M"),
         }
@@ -560,9 +617,9 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         with col_info1:
             st.metric("종합 SmartScore", f"{sel_row['SmartScore']:.1f} 점", sel_row['Signal'])
         with col_info2:
-            st.metric("M1 (선형 스케일링)", f"{sel_row['M1']:.1f} 점", "앙상블 비중 20%")
+            st.metric("M1 (선형 스케일)", f"{sel_row['M1']:.1f} 점", "앙상블 비중 20%")
         with col_info3:
-            st.metric("M2 (백분위 랭크)", f"{sel_row['M2']:.1f} 점", "앙상블 비중 40%")
+            st.metric("M2 (백분위 순위)", f"{sel_row['M2']:.1f} 점", "앙상블 비중 40%")
         with col_info4:
             st.metric("M3 (Z-Score 정규화)", f"{sel_row['M3']:.1f} 점", "앙상블 비중 40%")
 

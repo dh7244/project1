@@ -166,14 +166,12 @@ def resolve_ticker_advanced(cusip, name):
     return "-"
 
 def calc_next_filing_deadline(latest_date_str):
-    """최신 공시일을 바탕으로 다음 분기 공시 마감일 및 D-Day 계산"""
     try:
         dt = datetime.datetime.strptime(latest_date_str, "%Y-%m-%d").date()
     except Exception:
         dt = datetime.date.today()
 
     yr = dt.year
-    # SEC 13F 마감 기준일: 2/14(Q4), 5/15(Q1), 8/14(Q2), 11/14(Q3)
     deadlines = [
         datetime.date(yr, 2, 14),
         datetime.date(yr, 5, 15),
@@ -577,7 +575,6 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     if pass_only:
         df_show = df_show[df_show["AD_Pass"] == True].reset_index(drop=True)
         
-    # ⭐️ [신규 기능] 13F 공시 일정 모니터링 배너 (직전 공시일 / 다음 공시일 / 남은 일자)
     latest_filing_str = df_show["Filing_Date"].max() if "Filing_Date" in df_show.columns else "2026-08-14"
     prev_f_date, next_f_date, d_days = calc_next_filing_deadline(latest_filing_str)
     
@@ -589,6 +586,95 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     with col_d3:
         d_sign = f"D-{d_days}일" if d_days > 0 else f"D+{abs(d_days)}일"
         st.metric("⏱️ 다음 공시까지 남은 기간", d_sign, "공시 45일 주기 모니터링")
+
+    # ==========================================
+    # ⭐️ [신규 추가] 탑픽 5 (Top Picks 5) 모듈 (듀얼 모드 지원)
+    # ==========================================
+    st.divider()
+    st.subheader("⭐ 퀀트 탑픽 5선 (Quant Top Picks)")
+
+    tab_pure, tab_theme = st.tabs(["🔥 SML 랭킹 순수 상위 5선", "⚖️ 5대 테마 분산 포트폴리오"])
+
+    # 1. 순수 상위 5선 (검증 필터 통과 종목 중 득점 최상위)
+    with tab_pure:
+        st.caption("A/D Line 매집 검증을 통과하고 시세가 정상 수집된 종목 중 SML 종합 점수가 가장 높은 종목들입니다.")
+        pure_candidates = df_show[(df_show["AD_Pass"] == True) & (df_show["Price_Val"] > 0)]
+        pure_top5 = pure_candidates.head(5) if len(pure_candidates) >= 5 else df_show.head(5)
+
+        if not pure_top5.empty:
+            cols = st.columns(len(pure_top5))
+            for i, (_, row) in enumerate(pure_top5.iterrows()):
+                with cols[i]:
+                    st.markdown(f"#### #{i+1} `{row['Ticker']}`")
+                    st.caption(f"{row['Name'][:18]}")
+                    st.metric("SML 점수", f"{row['SML_Score']:.1f}점", row["Signal"])
+                    chg_emoji = "🔴" if row["Price_Chg"] >= 0 else "🔵"
+                    st.write(f"현재가: **\\${row['Price_Val']:.2f}**")
+                    st.write(f"공시후: {chg_emoji} `{row['Pct_Chg']:+.2f}%`")
+                    st.write(f"A/D변화: `{row['AD_Chg_Pct']:+.1f}%`")
+                    if st.button("🔍 상세 분석", key=f"btn_pure_{row['Ticker']}_{i}"):
+                        st.session_state["selected_ticker"] = row["Ticker"]
+                        st.rerun()
+
+    # 2. 5대 테마 분산 포트폴리오 (포트폴리오 역할별 5종목 슬롯)
+    with tab_theme:
+        st.caption("단일 지표 쏠림을 방지하고 상호 보완적인 5가지 퀀트 전략 슬롯으로 구성된 분산형 탑픽 포트폴리오입니다.")
+        valid_pool = df_show[df_show["Price_Val"] > 0].copy()
+        
+        theme_picks = []
+        selected_tickers = set()
+
+        # Slot 1: 고래 매집 대장주 (Inflow_M 최상위)
+        s1 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="Inflow_M", ascending=False)
+        if not s1.empty:
+            t1 = s1.iloc[0]
+            theme_picks.append(("🐋 고래 매집 대장주", t1, "순유입액 최상위"))
+            selected_tickers.add(t1["Ticker"])
+
+        # Slot 2: 극심한 저평가주 (Dist_52W 낙폭 최상위)
+        s2 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="Dist_52W", ascending=True)
+        if not s2.empty:
+            t2 = s2.iloc[0]
+            theme_picks.append(("📉 극심한 저평가주", t2, f"52주고점 {t2['Dist_52W']:.1f}%"))
+            selected_tickers.add(t2["Ticker"])
+
+        # Slot 3: 스마트머니 급증주 (M3 Z-Score 최상위)
+        s3 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="M3", ascending=False)
+        if not s3.empty:
+            t3 = s3.iloc[0]
+            theme_picks.append(("⚡ 통계적 수급 급증주", t3, f"M3 팩터 {t3['M3']:.1f}점"))
+            selected_tickers.add(t3["Ticker"])
+
+        # Slot 4: 단기 차트 수급 대장주 (AD_Chg_Pct 최상위)
+        s4 = valid_pool[(~valid_pool["Ticker"].isin(selected_tickers)) & (valid_pool["AD_Pass"] == True)].sort_values(by="AD_Chg_Pct", ascending=False)
+        if not s4.empty:
+            t4 = s4.iloc[0]
+            theme_picks.append(("🌊 차트 매집 1순위", t4, f"A/D변화 {t4['AD_Chg_Pct']:+.1f}%"))
+            selected_tickers.add(t4["Ticker"])
+
+        # Slot 5: 밸류 앙상블 우수주 (M2 백분위 순위 최상위)
+        s5 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="M2", ascending=False)
+        if not s5.empty:
+            t5 = s5.iloc[0]
+            theme_picks.append(("💎 밸류 앙상블 알짜주", t5, f"M2 팩터 {t5['M2']:.1f}점"))
+            selected_tickers.add(t5["Ticker"])
+
+        if theme_picks:
+            t_cols = st.columns(len(theme_picks))
+            for i, (tag, row, desc) in enumerate(theme_picks):
+                with t_cols[i]:
+                    st.markdown(f"**{tag}**")
+                    st.markdown(f"#### `{row['Ticker']}`")
+                    st.caption(f"{row['Name'][:18]}")
+                    st.metric("SML 점수", f"{row['SML_Score']:.1f}점", desc)
+                    chg_emoji = "🔴" if row["Price_Chg"] >= 0 else "🔵"
+                    st.write(f"현재가: **\\${row['Price_Val']:.2f}**")
+                    st.write(f"공시후: {chg_emoji} `{row['Pct_Chg']:+.2f}%`")
+                    if st.button("🔍 상세 분석", key=f"btn_theme_{row['Ticker']}_{i}"):
+                        st.session_state["selected_ticker"] = row["Ticker"]
+                        st.rerun()
+
+    st.divider()
 
     st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
     st.caption("💡 **표에서 확인하고 싶은 기업의 행을 터치/클릭**하면 바로 아래에 상세 팩터 분석 및 매수 기관 정보가 연동됩니다.")
@@ -708,7 +794,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 else:
                     st.warning("⚠️ 실시간 시세 미조회 종목으로 가격 지표 및 추천 시그널이 산출되지 않았습니다.")
 
-        # 매수 기관 목록
+        # 매수 기관 목록: 매수금액($M) 내림차순 정렬
         st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록")
         dt_df = pd.DataFrame(sel_row["details"])
         dt_df = dt_df.sort_values(by="val_m", ascending=False).reset_index(drop=True)

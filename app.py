@@ -165,6 +165,37 @@ def resolve_ticker_advanced(cusip, name):
         return found_tk
     return "-"
 
+def calc_next_filing_deadline(latest_date_str):
+    """최신 공시일을 바탕으로 다음 분기 공시 마감일 및 D-Day 계산"""
+    try:
+        dt = datetime.datetime.strptime(latest_date_str, "%Y-%m-%d").date()
+    except Exception:
+        dt = datetime.date.today()
+
+    yr = dt.year
+    # SEC 13F 마감 기준일: 2/14(Q4), 5/15(Q1), 8/14(Q2), 11/14(Q3)
+    deadlines = [
+        datetime.date(yr, 2, 14),
+        datetime.date(yr, 5, 15),
+        datetime.date(yr, 8, 14),
+        datetime.date(yr, 11, 14),
+        datetime.date(yr + 1, 2, 14),
+        datetime.date(yr + 1, 5, 15)
+    ]
+    
+    today = datetime.date.today()
+    next_dl = None
+    for d in deadlines:
+        if d > dt and d >= today:
+            next_dl = d
+            break
+            
+    if not next_dl:
+        next_dl = datetime.date(today.year, 11, 14)
+        
+    days_left = (next_dl - today).days
+    return dt.strftime("%Y-%m-%d"), next_dl.strftime("%Y-%m-%d"), days_left
+
 @st.cache_data(ttl=43200)
 def get_filings(cik):
     time.sleep(0.12)
@@ -315,7 +346,7 @@ def calc_score(df, sector_neutral=False):
 
 # --- UI 레이아웃 ---
 st.title("🎯 SEC 13F SML 레이더 v1.5")
-st.caption("스마트머니 래그(SML) 분석 | 3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 수치화 검증 | 섹터 중립화")
+st.caption("스마트머니 래그(SML) 분석 | 3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 수치화 검증 | 공시 일정 모니터링")
 
 with st.expander("📖 SML 점수 및 퀀트 팩터(M1·M2·M3) 상세 가이드 (필독)", expanded=False):
     st.markdown(
@@ -522,6 +553,7 @@ if run_btn:
                 "Price_Val": round(cur_p, 2),
                 "Price_Chg": round(price_chg, 2),
                 "Pct_Chg": round(pct_chg, 2),
+                "Filing_Date": d["f_date"],
                 "details": d["details"]
             })
         
@@ -545,6 +577,19 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     if pass_only:
         df_show = df_show[df_show["AD_Pass"] == True].reset_index(drop=True)
         
+    # ⭐️ [신규 기능] 13F 공시 일정 모니터링 배너 (직전 공시일 / 다음 공시일 / 남은 일자)
+    latest_filing_str = df_show["Filing_Date"].max() if "Filing_Date" in df_show.columns else "2026-08-14"
+    prev_f_date, next_f_date, d_days = calc_next_filing_deadline(latest_filing_str)
+    
+    col_d1, col_d2, col_d3 = st.columns(3)
+    with col_d1:
+        st.metric("📅 직전 13F 공시 기준일", prev_f_date)
+    with col_d2:
+        st.metric("⏳ 다음 13F 공시 마감일", next_f_date)
+    with col_d3:
+        d_sign = f"D-{d_days}일" if d_days > 0 else f"D+{abs(d_days)}일"
+        st.metric("⏱️ 다음 공시까지 남은 기간", d_sign, "공시 45일 주기 모니터링")
+
     st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
     st.caption("💡 **표에서 확인하고 싶은 기업의 행을 터치/클릭**하면 바로 아래에 상세 팩터 분석 및 매수 기관 정보가 연동됩니다.")
 
@@ -648,7 +693,6 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                     st.write(f"- **기간 상대 수익률 (비중 60%)**: {sel_row['Rel_Return']:+.1f}%")
                     st.write(f"- **52주 최고가 괴리율 (비중 40%)**: {sel_row['Dist_52W']:.1f}%")
                     
-                    # 💡 달러 기호 이스케이프 및 자연스러운 가격 추이 문구 반영
                     chg_sign = "🔴 +" if sel_row["Price_Chg"] > 0 else ("🔵 -" if sel_row["Price_Chg"] < 0 else "")
                     chg_abs = abs(sel_row["Price_Chg"])
                     pct_str = f"{sel_row['Pct_Chg']:+.2f}%"
@@ -664,7 +708,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 else:
                     st.warning("⚠️ 실시간 시세 미조회 종목으로 가격 지표 및 추천 시그널이 산출되지 않았습니다.")
 
-        # 매수 기관 목록: 매수금액($M) 내림차순 정렬
+        # 매수 기관 목록
         st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록")
         dt_df = pd.DataFrame(sel_row["details"])
         dt_df = dt_df.sort_values(by="val_m", ascending=False).reset_index(drop=True)

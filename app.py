@@ -12,7 +12,7 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="13F SmartScore v1.5",
+    page_title="13F SML Radar v1.5",
     page_icon="📈",
     layout="wide"
 )
@@ -286,8 +286,9 @@ def calc_score(df, sector_neutral=False):
     z_comp = 0.55 * np.nan_to_num(z_inst) + 0.45 * np.nan_to_num(z_lag)
     d["M3"] = (stats.norm.cdf(z_comp) * 100.0).round(1)
     
-    raw_smart = 0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]
-    d["SmartScore"] = raw_smart.round(1).fillna(50.0)
+    # ⭐️ SML 점수(Smart Money Lag Score) 앙상블 공식
+    raw_sml = 0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]
+    d["SML_Score"] = raw_sml.round(1).fillna(50.0)
 
     sigs = []
     for _, r in d.iterrows():
@@ -298,7 +299,7 @@ def calc_score(df, sector_neutral=False):
             sigs.append("⚪ NO_DATA")
             continue
             
-        sc = r["SmartScore"]
+        sc = r["SML_Score"]
         ad = r["AD_Pass"]
         if sc >= 75.0 and ad:
             sigs.append("🟢 STRONG_BUY")
@@ -310,39 +311,53 @@ def calc_score(df, sector_neutral=False):
             sigs.append("⚪ NEUTRAL")
     d["Signal"] = sigs
     
-    d["Rank"] = d["SmartScore"].rank(ascending=False, method="min").fillna(len(d)).astype(int)
+    d["Rank"] = d["SML_Score"].rank(ascending=False, method="min").fillna(len(d)).astype(int)
     return d.sort_values(by="Rank").reset_index(drop=True)
 
 # --- UI 레이아웃 ---
-st.title("🎯 SEC 13F 스마트스코어 & 시그널 v1.5")
-st.caption("월가 Top 50 기관 전수 분석 | 3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 검증 | 섹터 중립화")
+st.title("🎯 SEC 13F SML 레이더 v1.5")
+st.caption("스마트머니 래그(SML) 분석 | 3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 검증 | 섹터 중립화")
 
-with st.expander("📖 스마트스코어 & M1 · M2 · M3 팩터 직관 가이드 (클릭하여 펼치기)", expanded=False):
+# 💡 상세 가이드 Expander
+with st.expander("📖 SML 점수 및 퀀트 팩터(M1·M2·M3) 상세 가이드 (필독)", expanded=False):
     st.markdown(
         """
-        ### 1. 스마트스코어(SmartScore)란?
-        * **"월가 큰손들이 대량 매집했는데, 아직 주가가 덜 오른 저평가 종목"**을 발굴하는 종합 점수입니다 (100점 만점).
-        * **공식**: $\\text{SmartScore} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$
-        * 모든 모델은 **기관 수급(55%)** + **가격 저평가/소외도(45%)**의 황금 비율로 결합됩니다.
+        ### 1. SML 점수(Smart Money Lag Score)란?
+        * **개념**: **"스마트머니(월가 대형 기관)의 집중 매수가 유입되었음에도, 주가는 아직 오르지 않고 뒤처진(Lag) 저평가 종목"**을 발굴하는 퀀트 앙상블 스코어입니다 (100점 만점).
+        * **핵심 가설**: 거대 자본을 굴리는 전문 기관들은 장기간에 걸쳐 분할 매집하며, 공시 이후 시장의 관심이 쏠리면서 뒤늦게 주가가 제자리를 찾아가는 '시차 반등(Lag Reversal)' 현상을 노립니다.
+        * **종합 공식**: 
+          $$\\text{SML 점수} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$$
+        * **내부 평가 비중**: 모든 모델은 **기관 수급 강도(55%)** + **주가 저평가/소외도(45%)**를 결합하여 산출됩니다.
+          * 수급 지표: 매수 참여 기관 수(35%) + 순유입 대금(35%) + 순증가 주식수(30%)
+          * 소외도 지표: 최근 6개월 기간 수익률(60%, 낮을수록 가점) + 52주 최고가 괴리율(40%, 낙폭 클수록 가점)
 
         ---
-        ### 2. 세부 팩터 모델(M1, M2, M3)의 차이점
+        ### 2. 세부 팩터 모델(M1, M2, M3)의 작동 원리
         * **M1 (선형 스케일 모델 / 20%)**:  
-          * 최솟값 0점, 최댓값 100점으로 정직하게 비례 환산합니다.  
-          * 👉 **특징**: 유입 금액이나 매수 주식수가 압도적으로 큰 초대형주에 가점을 부여합니다.
+          * 데이터를 최솟값 0점, 최댓값 100점으로 정직하게 비례 변환합니다.  
+          * **특징**: 수천억~수조 원 단위의 압도적인 금액이나 대량 주식이 유입된 **초대형 매집주**가 높은 점수를 받습니다.
         * **M2 (백분위 순위 모델 / 40%)**:  
-          * 금액 차이와 상관없이 **전체 종목 중 몇 등인지(Percentile)**로 점수를 매깁니다.  
-          * 👉 **특징**: 특정 종목 하나의 수급이 비정상적으로 튀는 이상치(Outlier) 왜곡을 방지합니다.
-        * **M3 (Z-Score 정규화 모델 / 40%)**:  
-          * 통계적 표준편차($Z$-값)를 구해 정규분포 확률(CDF)로 변환합니다.  
-          * 👉 **특징**: 평균 대비 얼마나 이례적으로 스마트머니가 집중되었는지를 정밀 포착합니다.
+          * 절대적인 금액 차이를 배제하고, 전체 종목 중 상대적으로 몇 등(상위 몇 %)인지로 점수를 부여합니다.  
+          * **특징**: 특정 1~2개 종목이 비정상적으로 큰 자금을 빨아들여 전체 랭킹이 왜곡되는 **극단적 이상치(Outlier)를 완화**하고 건전한 순위를 보장합니다.
+        * **M3 (Z-Score 정규분포 모델 / 40%)**:  
+          * 데이터의 평균과 표준편차($Z$-Score)를 측정한 뒤, 정규분포 누적확률함수(CDF)를 적용해 점수화합니다.  
+          * **특징**: 평상시 수급 수준을 벗어나 **통계적으로 이례적인 자금 집중 징후(Spike)**를 정밀 포착합니다.
 
         ---
-        ### 3. 투자 시그널 판정 기준
-        * 🟢 **STRONG_BUY**: 점수 75점 이상 + 차트 매집(A/D Line) 확인 $\\rightarrow$ **적극 매수 검토**
-        * 🔵 **ACCUMULATE**: 점수 60점 이상 + 차트 매집(A/D Line) 확인 $\\rightarrow$ **분할 매수**
-        * 🟡 **WATCH_LAG**: 점수는 60점 이상이나, 최근 차트에서 매도 압력 감지 $\\rightarrow$ **관망 (바닥 확인 후 진입)**
-        * ⚪ **NO_DATA**: 비상장/채권/시세 미조회 종목 (추천 제외)
+        ### 3. 마이크로스트럭처(A/D Line)와 실전 투자 시그널 대응법
+        13F 공시는 분기 마감 후 최대 45일 뒤에 제출되므로 **'공시 시점에는 이미 기관이 차익실현 중일 수 있는 지연 리스크'**가 존재합니다. 시스템은 이를 차단하기 위해 최근 10거래일 **A/D Line(축적/분산선)**의 자금 유출입을 기술적으로 교차 검증합니다.
+
+        * 🟢 **STRONG_BUY (적극 매수 검토)**:  
+          * SML 75점 이상 + A/D Line 통과(PASS)  
+          * 기관 매집 규모가 크고 주가도 매력적이며, 최근 2주간 차트에서도 장중 고가 마감(자금 유입)이 확인된 최우선 관심주.
+        * 🔵 **ACCUMULATE (분할 매수)**:  
+          * SML 60점 이상 + A/D Line 통과(PASS)  
+          * 수급 밸런스가 우수하고 바닥 다지기가 확인되어 안정적인 분할 접근이 적합한 종목.
+        * 🟡 **WATCH_LAG (관망 / 매수 보류)**:  
+          * SML 60점 이상이나, A/D Line 탈락(FAIL)  
+          * **주의**: 지난 분기 기관 매수세는 컸으나, 최근 2주간 차트에서 음봉 밀림/매도 물량이 출회 중인 상태입니다. 지금 바로 사지 말고 **주가가 횡보하며 바닥 지지선을 만들 때까지 관심종목으로 관망**해야 합니다.
+        * ⚪ **NO_DATA (추천 제외)**:  
+          * 비상장 주식, 지분 증서, 사모사채 등 시세가 없어 검증이 불가능한 종목.
         """
     )
 
@@ -424,7 +439,7 @@ if run_btn:
                 for cusip, val in h2.items():
                     prev_records[(cik, cusip)] = val
         
-        status_box.markdown("📊 **기관 수급 변화량 및 순유입액 집계 중...**")
+        status_box.markdown("📊 **스마트머니 순유입 및 기관 수급 변화량 집계 중...**")
         prog.progress(55)
         
         tot = {}
@@ -519,7 +534,7 @@ if run_btn:
                 "details": d["details"]
             })
         
-        status_box.markdown("✨ **스마트스코어 앙상블 및 랭킹 정렬 완료!**")
+        status_box.markdown("✨ **SML 점수 앙상블 및 랭킹 정렬 완료!**")
         prog.progress(100)
         time.sleep(0.5)
         
@@ -542,7 +557,6 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
     st.caption("💡 **표에서 확인하고 싶은 기업의 행을 터치/클릭**하면 바로 아래에 상세 팩터 분석 및 매수 기관 정보가 연동됩니다.")
 
-    # 🔴/🔵 직관적 심볼 포맷터 (HTML 태그 깨짐 원천 방지)
     def fmt_price_chg_symbol(v):
         if pd.isna(v) or v == 0.0:
             return "$0.00"
@@ -560,18 +574,17 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
             return f"🔵 -{abs(v):.2f}%"
 
     table_df = df_show[[
-        "Rank", "Ticker", "Name", "SmartScore", "M1", "M2", "M3",
+        "Rank", "Ticker", "Name", "SML_Score", "M1", "M2", "M3",
         "Signal", "Price_Val", "Price_Chg", "Pct_Chg",
         "Fund_Count", "Inflow_M"
     ]].copy()
     
     table_df.columns = [
-        "순위", "티커", "기업명", "스마트스코어", "M1", "M2", "M3",
+        "순위", "티커", "기업명", "SML 점수", "M1", "M2", "M3",
         "투자시그널", "현재가($)", "공시후변동($)", "공시후변동률(%)",
         "기관수", "유입액($M)"
     ]
 
-    # 심볼 적용
     table_df["공시후변동($)"] = table_df["공시후변동($)"].apply(fmt_price_chg_symbol)
     table_df["공시후변동률(%)"] = table_df["공시후변동률(%)"].apply(fmt_pct_chg_symbol)
 
@@ -583,7 +596,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         selection_mode="single-row",
         column_config={
             "순위": st.column_config.NumberColumn(format="%d"),
-            "스마트스코어": st.column_config.NumberColumn(format="%.1f 점"),
+            "SML 점수": st.column_config.NumberColumn(format="%.1f 점"),
             "M1": st.column_config.NumberColumn(format="%.1f"),
             "M2": st.column_config.NumberColumn(format="%.1f"),
             "M3": st.column_config.NumberColumn(format="%.1f"),
@@ -614,7 +627,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         
         col_info1, col_info2, col_info3, col_info4 = st.columns(4)
         with col_info1:
-            st.metric("종합 SmartScore", f"{sel_row['SmartScore']:.1f} 점", sel_row['Signal'])
+            st.metric("종합 SML 점수", f"{sel_row['SML_Score']:.1f} 점", sel_row['Signal'])
         with col_info2:
             st.metric("M1 (선형 스케일)", f"{sel_row['M1']:.1f} 점", "앙상블 비중 20%")
         with col_info3:
@@ -622,17 +635,17 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         with col_info4:
             st.metric("M3 (Z-Score 정규화)", f"{sel_row['M3']:.1f} 점", "앙상블 비중 40%")
 
-        with st.expander("📐 M1, M2, M3 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
+        with st.expander("📐 SML 점수 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
             st.markdown(
                 """
-                **SmartScore 앙상블 공식**:  
-                $$\\text{SmartScore} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$$
-                각 서브 모델($M_1, M_2, M_3$)은 **기관 수급 점수(55%)**와 **가격 래깅/소외 점수(45%)**의 결합으로 산출됩니다.
+                **SML 점수 앙상블 공식**:  
+                $$\\text{SML 점수} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$$
+                각 서브 모델($M_1, M_2, M_3$)은 **스마트머니 수급 점수(55%)**와 **주가 래깅/소외 점수(45%)**의 결합으로 산출됩니다.
                 """
             )
             b_col1, b_col2 = st.columns(2)
             with b_col1:
-                st.markdown("##### 🏛️ 기관 수급 지표 (전체 비중 55%)")
+                st.markdown("##### 🏛️ 스마트머니 수급 지표 (전체 비중 55%)")
                 st.write(f"- **매수 기관 수 (비중 35%)**: {sel_row['Fund_Count']}개 사")
                 st.write(f"- **순유입 대금 (비중 35%)**: ${sel_row['Inflow_M']:,.1f} M")
                 st.write(f"- **신규/추가 주식수 (비중 30%)**: {sel_row['Shares_Sum']:,} 주")

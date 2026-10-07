@@ -81,21 +81,34 @@ DEFAULT_FUNDS = {
 }
 
 COMMON_CUSIP_MAP = {
-    "84615Q103": "SPCX", "037833100": "AAPL", "594918104": "MSFT", "67066G104": "NVDA",
-    "023135106": "AMZN", "02079K305": "GOOGL", "02079K107": "GOOG", "30303M102": "META",
-    "88160R101": "TSLA", "064058100": "AVGO", "46625H100": "JPM", "532457108": "LLY",
-    "931142103": "WMT", "92826C839": "V", "254687106": "DIS", "69608A108": "PLTR",
-    "22788C105": "CRWD", "874039100": "TSM", "007903107": "AMD", "74340W103": "QCOM",
-    "09247X101": "BLK", "025816109": "AXP", "060505104": "BAC", "191216100": "KO",
-    "166764100": "CVX", "713448108": "PEP", "478160104": "JNJ", "00206R102": "T",
-    "91324P102": "UNH"
+    "G7945M107": "STX", "H7945M107": "STX", "81180R107": "STX",
+    "31428X106": "FDX", "84615Q103": "SPCX", "037833100": "AAPL",
+    "594918104": "MSFT", "67066G104": "NVDA", "023135106": "AMZN",
+    "02079K305": "GOOGL", "02079K107": "GOOG", "30303M102": "META",
+    "88160R101": "TSLA", "064058100": "AVGO", "46625H100": "JPM",
+    "532457108": "LLY", "931142103": "WMT", "92826C839": "V",
+    "254687106": "DIS", "69608A108": "PLTR", "22788C105": "CRWD",
+    "874039100": "TSM", "007903107": "AMD", "74340W103": "QCOM",
+    "09247X101": "BLK", "025816109": "AXP", "060505104": "BAC",
+    "191216100": "KO", "166764100": "CVX", "713448108": "PEP",
+    "478160104": "JNJ", "00206R102": "T", "91324P102": "UNH",
+    "64110D104": "NFLX", "22160K105": "COST", "00724F101": "ADBE",
+    "90353T100": "UBER", "009066101": "ABNB", "17275R102": "CSCO",
+    "458140100": "INTC"
 }
 
 EXPLICIT_NAME_MAP = {
-    "SPACE EXPLORATION": "SPCX", "SPACEX": "SPCX", "MICROSOFT": "MSFT", "APPLE": "AAPL",
-    "NVIDIA": "NVDA", "AMAZON": "AMZN", "ALPHABET": "GOOGL", "GOOGLE": "GOOGL",
-    "META PLATFORMS": "META", "FACEBOOK": "META", "TESLA": "TSLA", "BROADCOM": "AVGO",
-    "PALANTIR": "PLTR", "TAIWAN SEMICONDUCTOR": "TSM", "BERKSHIRE HATHAWAY": "BRK-B"
+    "SEAGATE": "STX", "FEDEX": "FDX", "FEDERAL EXPRESS": "FDX",
+    "SPACE EXPLORATION": "SPCX", "SPACEX": "SPCX", "MICROSOFT": "MSFT",
+    "APPLE": "AAPL", "NVIDIA": "NVDA", "AMAZON": "AMZN",
+    "ALPHABET": "GOOGL", "GOOGLE": "GOOGL", "META PLATFORMS": "META",
+    "FACEBOOK": "META", "TESLA": "TSLA", "BROADCOM": "AVGO",
+    "PALANTIR": "PLTR", "TAIWAN SEMICONDUCTOR": "TSM",
+    "BERKSHIRE HATHAWAY": "BRK-B", "NETFLIX": "NFLX", "COSTCO": "COST",
+    "ADOBE": "ADBE", "UBER TECHNOLOGIES": "UBER", "AIRBNB": "ABNB",
+    "ELI LILLY": "LLY", "JPMORGAN": "JPM", "WALT DISNEY": "DIS",
+    "CROWDSTRIKE": "CRWD", "QUALCOMM": "QCOM", "CHEVRON": "CVX",
+    "PEPSICO": "PEP", "COCA COLA": "KO", "WALMART": "WMT"
 }
 
 @st.cache_data(ttl=86400)
@@ -126,7 +139,7 @@ def search_yahoo_ticker(query_name):
     search_str = " ".join(words)
     url = f"https://query2.finance.yahoo.com/v1/finance/search?q={search_str}&quotesCount=1&newsCount=0"
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=3)
         if r.status_code == 200:
             quotes = r.json().get("quotes", [])
             if quotes and "symbol" in quotes[0]:
@@ -274,8 +287,17 @@ def calc_score(df, sector_neutral=False):
     raw_smart = 0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]
     d["SmartScore"] = raw_smart.round(1).fillna(50.0)
 
+    # ⭐️ 핵심 변경: 주가 미조회 종목은 추천 시그널 부여 원천 차단
     sigs = []
     for _, r in d.iterrows():
+        p_val = r["Price_Val"]
+        tk = r["Ticker"]
+        
+        # 주가나 티커가 없으면 추천 대상에서 배제
+        if p_val <= 0 or tk == "-":
+            sigs.append("⚪ NO_DATA")
+            continue
+            
         sc = r["SmartScore"]
         ad = r["AD_Pass"]
         if sc >= 75.0 and ad:
@@ -287,10 +309,10 @@ def calc_score(df, sector_neutral=False):
         else:
             sigs.append("⚪ NEUTRAL")
     d["Signal"] = sigs
+    
     d["Rank"] = d["SmartScore"].rank(ascending=False, method="min").fillna(len(d)).astype(int)
     return d.sort_values(by="Rank").reset_index(drop=True)
 
-# ⭐️ 모바일 세션 끊김을 방지하는 핵심 캐시 함수 (결과를 서버 메모리에 12시간 저장)
 @st.cache_data(ttl=43200, show_spinner=False)
 def run_quant_engine(funds_dict_items, top_n, sec_neutral):
     curr_records = []
@@ -355,7 +377,7 @@ def run_quant_engine(funds_dict_items, top_n, sec_neutral):
     data_rows = []
     for cusip, d in ranked:
         tk = resolve_ticker_advanced(cusip, d["name"])
-        rel_ret, dist_52w, ad_pass, cur_p = -15.0, -20.0, True, 0.0
+        rel_ret, dist_52w, ad_pass, cur_p = 0.0, 0.0, False, 0.0
         price_chg, pct_chg = 0.0, 0.0
 
         if tk != "-":
@@ -388,7 +410,7 @@ def run_quant_engine(funds_dict_items, top_n, sec_neutral):
             "CUSIP": cusip,
             "Ticker": tk,
             "Name": d["name"],
-            "Sector": "Tech/Aerospace" if tk in ["SPCX", "NVDA", "AAPL", "MSFT", "AVGO", "PLTR"] else "General",
+            "Sector": "Tech/Aerospace" if tk in ["STX", "FDX", "SPCX", "NVDA", "AAPL", "MSFT", "AVGO", "PLTR"] else "General",
             "Fund_Count": len(d["funds"]),
             "Inflow_M": round(d["inflow"] / 1000.0, 1),
             "Shares_Sum": d["shares"],
@@ -426,13 +448,15 @@ with st.expander(f"🏛️ 분석 대상 기관 관리 (총 {len(st.session_stat
         default=default_selected
     )
 
-col1, col2, col3 = st.columns([1, 1, 1])
+col1, col2, col3, col4 = st.columns([1.2, 1, 1, 1.2])
 with col1:
     top_n = st.slider("최종 출력 종목 수 (상위 N개)", min_value=20, max_value=300, value=50, step=10)
 with col2:
-    sec_neutral = st.checkbox("섹터 중립화(Sector Neutral) 적용", value=False)
+    sec_neutral = st.checkbox("섹터 중립화 적용", value=False)
 with col3:
-    pass_only = st.checkbox("A/D Line 통과(PASS) 종목만 표시", value=False)
+    pass_only = st.checkbox("A/D Line 통과(PASS)만", value=False)
+with col4:
+    valid_price_only = st.checkbox("시세 조회 성공 종목만 보기", value=True)
 
 btn_col1, btn_col2 = st.columns([3, 1])
 with btn_col1:
@@ -459,11 +483,9 @@ if run_btn:
             st.session_state["result_df"] = res
             st.session_state["selected_ticker"] = res["Ticker"].iloc[0] if not res.empty else None
 
-# 세션이 끊겨도 캐시된 결과가 있으면 자동 복구 표시
 if "result_df" not in st.session_state and funds_to_analyze:
     tup_items = tuple(funds_to_analyze.items())
     try:
-        # 이전에 캐시된 연산이 있는지 확인하여 즉시 복구
         cached_res = run_quant_engine(tup_items, top_n, sec_neutral)
         if not cached_res.empty:
             st.session_state["result_df"] = cached_res
@@ -473,6 +495,12 @@ if "result_df" not in st.session_state and funds_to_analyze:
 
 if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     df_show = st.session_state["result_df"].copy()
+    
+    # 주가 조회된 종목만 필터링 옵션
+    if valid_price_only:
+        df_show = df_show[df_show["Price_Val"] > 0].reset_index(drop=True)
+
+    # A/D Line 필터링 옵션
     if pass_only:
         df_show = df_show[df_show["AD_Pass"] == True].reset_index(drop=True)
         
@@ -516,48 +544,55 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         if sel_idx < len(df_show):
             st.session_state["selected_ticker"] = df_show.iloc[sel_idx]["Ticker"]
     elif "selected_ticker" not in st.session_state or st.session_state["selected_ticker"] not in df_show["Ticker"].values:
-        st.session_state["selected_ticker"] = df_show["Ticker"].iloc[0]
+        if not df_show.empty:
+            st.session_state["selected_ticker"] = df_show["Ticker"].iloc[0]
 
-    current_tk = st.session_state["selected_ticker"]
-    sel_row = df_show[df_show["Ticker"] == current_tk].iloc[0]
+    if not df_show.empty:
+        current_tk = st.session_state["selected_ticker"]
+        sel_row = df_show[df_show["Ticker"] == current_tk].iloc[0]
 
-    st.divider()
-    
-    # --- 종목 상세 분석 및 팩터 비중 분해 영역 ---
-    st.subheader(f"🔍 [{current_tk}] {sel_row['Name']} 심층 팩터 분석 & 매수 기관")
-    
-    col_info1, col_info2, col_info3, col_info4 = st.columns(4)
-    with col_info1:
-        st.metric("종합 SmartScore", f"{sel_row['SmartScore']:.1f} 점", sel_row['Signal'])
-    with col_info2:
-        st.metric("M1 (선형 스케일링)", f"{sel_row['M1']:.1f} 점", "앙상블 비중 20%")
-    with col_info3:
-        st.metric("M2 (백분위 랭크)", f"{sel_row['M2']:.1f} 점", "앙상블 비중 40%")
-    with col_info4:
-        st.metric("M3 (Z-Score 정규화)", f"{sel_row['M3']:.1f} 점", "앙상블 비중 40%")
+        st.divider()
+        
+        # --- 종목 상세 분석 및 팩터 비중 분해 영역 ---
+        st.subheader(f"🔍 [{current_tk}] {sel_row['Name']} 심층 팩터 분석 & 매수 기관")
+        
+        col_info1, col_info2, col_info3, col_info4 = st.columns(4)
+        with col_info1:
+            st.metric("종합 SmartScore", f"{sel_row['SmartScore']:.1f} 점", sel_row['Signal'])
+        with col_info2:
+            st.metric("M1 (선형 스케일링)", f"{sel_row['M1']:.1f} 점", "앙상블 비중 20%")
+        with col_info3:
+            st.metric("M2 (백분위 랭크)", f"{sel_row['M2']:.1f} 점", "앙상블 비중 40%")
+        with col_info4:
+            st.metric("M3 (Z-Score 정규화)", f"{sel_row['M3']:.1f} 점", "앙상블 비중 40%")
 
-    with st.expander("📐 M1, M2, M3 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
-        st.markdown(
-            """
-            **SmartScore 앙상블 공식**:  
-            $$\\text{SmartScore} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$$
-            각 서브 모델($M_1, M_2, M_3$)은 **기관 수급 점수(55%)**와 **가격 래깅/소외 점수(45%)**의 결합으로 산출됩니다.
-            """
-        )
-        b_col1, b_col2 = st.columns(2)
-        with b_col1:
-            st.markdown("##### 🏛️ 기관 수급 지표 (전체 비중 55%)")
-            st.write(f"- **매수 기관 수 (비중 35%)**: {sel_row['Fund_Count']}개 사")
-            st.write(f"- **순유입 대금 (비중 35%)**: ${sel_row['Inflow_M']:,.1f} M")
-            st.write(f"- **신규/추가 주식수 (비중 30%)**: {sel_row['Shares_Sum']:,} 주")
-            
-        with b_col2:
-            st.markdown("##### 📉 가격 소외/래깅 지표 (전체 비중 45%)")
-            st.write(f"- **기간 상대 수익률 (비중 60%)**: {sel_row['Rel_Return']:+.1f}%")
-            st.write(f"- **52주 최고가 괴리율 (비중 40%)**: {sel_row['Dist_52W']:.1f}%")
-            st.write(f"- **A/D Line(매집 강도) 통과 여부**: {'✅ PASS (수급 양호)' if sel_row['AD_Pass'] else '❌ FAIL (분산 우려)'}")
+        with st.expander("📐 M1, M2, M3 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
+            st.markdown(
+                """
+                **SmartScore 앙상블 공식**:  
+                $$\\text{SmartScore} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$$
+                각 서브 모델($M_1, M_2, M_3$)은 **기관 수급 점수(55%)**와 **가격 래깅/소외 점수(45%)**의 결합으로 산출됩니다.
+                """
+            )
+            b_col1, b_col2 = st.columns(2)
+            with b_col1:
+                st.markdown("##### 🏛️ 기관 수급 지표 (전체 비중 55%)")
+                st.write(f"- **매수 기관 수 (비중 35%)**: {sel_row['Fund_Count']}개 사")
+                st.write(f"- **순유입 대금 (비중 35%)**: ${sel_row['Inflow_M']:,.1f} M")
+                st.write(f"- **신규/추가 주식수 (비중 30%)**: {sel_row['Shares_Sum']:,} 주")
+                
+            with b_col2:
+                st.markdown("##### 📉 가격 소외/래깅 지표 (전체 비중 45%)")
+                if sel_row["Price_Val"] > 0:
+                    st.write(f"- **기간 상대 수익률 (비중 60%)**: {sel_row['Rel_Return']:+.1f}%")
+                    st.write(f"- **52주 최고가 괴리율 (비중 40%)**: {sel_row['Dist_52W']:.1f}%")
+                    st.write(f"- **A/D Line(매집 강도) 통과 여부**: {'✅ PASS (수급 양호)' if sel_row['AD_Pass'] else '❌ FAIL (분산 우려)'}")
+                else:
+                    st.warning("⚠️ 실시간 시세 미조회 종목으로 가격 지표 및 추천 시그널이 산출되지 않았습니다.")
 
-    st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록")
-    dt_df = pd.DataFrame(sel_row["details"])
-    dt_df.columns = ["기관명", "매수구분", "매수주식수", "매수금액($M)"]
-    st.dataframe(dt_df, use_container_width=True, hide_index=True)
+        st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록")
+        dt_df = pd.DataFrame(sel_row["details"])
+        dt_df.columns = ["기관명", "매수구분", "매수주식수", "매수금액($M)"]
+        st.dataframe(dt_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("선택한 필터 조건에 부합하는 종목이 없습니다.")

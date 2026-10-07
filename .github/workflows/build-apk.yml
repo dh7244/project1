@@ -27,6 +27,10 @@ jobs:
             kivy/buildozer:latest \
             android debug
 
+      - name: Fix File Permissions
+        run: |
+          sudo chown -R runner:docker "$GITHUB_WORKSPACE"
+
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:

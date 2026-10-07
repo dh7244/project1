@@ -69,7 +69,7 @@ DEFAULT_FUNDS = {
     "프랭클린 리소시스 (Franklin Resources)": "0000038777",
     "얼라이언스 번스틴 (AllianceBernstein)": "0001109448",
 
-    # 4. 글로벌 대형 IB 및 프라이빗 뱅킹
+    # 4. 글로벌 대형 IB 및 국부펀드
     "JP모건 체이스 (JPMorgan Chase & Co)": "0000019617",
     "골드만 삭스 (Goldman Sachs Group)": "0000886982",
     "모건 스탠리 (Morgan Stanley)": "0000895421",
@@ -226,10 +226,17 @@ def calc_score(df, sector_neutral=False):
     if sector_neutral and "Sector" in d.columns:
         d["Rel_Return"] = d.groupby("Sector")["Rel_Return"].transform(lambda s: s - s.mean())
 
+    # 1) 세부 팩터 계산 및 저장 (상세 설명용)
+    d["Factor_Inst_Count"] = min_max(d["Fund_Count"]).round(1)
+    d["Factor_Inst_Inflow"] = min_max(d["Inflow_M"]).round(1)
+    d["Factor_Inst_Shares"] = min_max(d["Shares_Sum"]).round(1)
+    d["Factor_Lag_Return"] = min_max(d["Rel_Return"], invert=True).round(1)
+    d["Factor_Lag_Dist52W"] = min_max(d["Dist_52W"], invert=True).round(1)
+
     m1_inst = (
-        0.35 * min_max(d["Fund_Count"])
-        + 0.35 * min_max(d["Inflow_M"])
-        + 0.30 * min_max(d["Shares_Sum"])
+        0.35 * d["Factor_Inst_Count"]
+        + 0.35 * d["Factor_Inst_Inflow"]
+        + 0.30 * d["Factor_Inst_Shares"]
     )
     m2_inst = (
         d["Fund_Count"].rank(pct=True).fillna(0.5) * 50.0
@@ -240,8 +247,8 @@ def calc_score(df, sector_neutral=False):
     z_inst = stats.zscore(f_counts) if len(f_counts) > 1 and np.std(f_counts) > 0 else np.zeros(len(d))
 
     m1_lag = (
-        0.60 * min_max(d["Rel_Return"], invert=True)
-        + 0.40 * min_max(d["Dist_52W"], invert=True)
+        0.60 * d["Factor_Lag_Return"]
+        + 0.40 * d["Factor_Lag_Dist52W"]
     )
     m2_lag = (
         (-d["Rel_Return"]).rank(pct=True).fillna(0.5) * 50.0
@@ -402,7 +409,6 @@ if st.button("🚀 13F 전수 수급 집계 & 퀀트 스코어링 실행", type=
                     if not hist.empty and len(hist) > 10:
                         cur_p = float(hist["Close"].iloc[-1])
                         max_p = float(hist["High"].max())
-                        min_p = float(hist["Low"].min())
                         start_p = float(hist["Close"].iloc[0])
                         
                         dist_52w = ((cur_p - max_p) / max_p) * 100.0 if max_p > 0 else 0.0
@@ -441,14 +447,16 @@ if st.button("🚀 13F 전수 수급 집계 & 퀀트 스코어링 실행", type=
         
         res_df = calc_score(pd.DataFrame(data_rows), sector_neutral=sec_neutral)
         st.session_state["result_df"] = res_df
+        st.session_state["selected_ticker"] = res_df["Ticker"].iloc[0] if not res_df.empty else None
 
 if "result_df" in st.session_state:
     df_show = st.session_state["result_df"].copy()
     if pass_only:
-        df_show = df_show[df_show["AD_Pass"] == True]
+        df_show = df_show[df_show["AD_Pass"] == True].reset_index(drop=True)
         
     st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
-    
+    st.caption("💡 **표에서 확인하고 싶은 기업의 행을 터치/클릭**하면 바로 아래에 상세 팩터 분석 및 매수 기관 정보가 표시됩니다.")
+
     table_df = df_show[[
         "Rank", "Ticker", "Name", "SmartScore", "M1", "M2", "M3",
         "Signal", "Price_Val", "Price_Chg", "Pct_Chg",
@@ -485,17 +493,63 @@ if "result_df" in st.session_state:
         "공시후변동률(%)": lambda x: f"{'+' if x > 0 else ''}{x:.2f}%" if x != 0 else "0.00%"
     })
 
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
-    
+    # 행 클릭 즉시 이벤트 감지 (on_select="rerun")
+    event = st.dataframe(
+        styled_df,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row"
+    )
+
+    # 클릭된 행의 티커 추출 (미선택 시 1위 기본값)
+    if event and event.selection and event.selection.rows:
+        sel_idx = event.selection.rows[0]
+        st.session_state["selected_ticker"] = df_show.iloc[sel_idx]["Ticker"]
+    elif "selected_ticker" not in st.session_state or st.session_state["selected_ticker"] not in df_show["Ticker"].values:
+        st.session_state["selected_ticker"] = df_show["Ticker"].iloc[0]
+
+    current_tk = st.session_state["selected_ticker"]
+    sel_row = df_show[df_show["Ticker"] == current_tk].iloc[0]
+
     st.divider()
-    st.subheader("🔍 종목별 매수 기관 드릴다운 상세")
-    sel_tk = st.selectbox("확인할 종목을 선택하세요:", df_show["Ticker"].tolist())
-    if sel_tk:
-        sel_row = df_show[df_show["Ticker"] == sel_tk].iloc[0]
+    
+    # --- 종목 상세 분석 및 팩터 비중 분해 영역 ---
+    st.subheader(f"🔍 [{current_tk}] {sel_row['Name']} 심층 팩터 분석 & 매수 기관")
+    
+    col_info1, col_info2, col_info3, col_info4 = st.columns(4)
+    with col_info1:
+        st.metric("종합 SmartScore", f"{sel_row['SmartScore']:.1f} 점", sel_row['Signal'])
+    with col_info2:
+        st.metric("M1 (선형 스케일링)", f"{sel_row['M1']:.1f} 점", "앙상블 비중 20%")
+    with col_info3:
+        st.metric("M2 (백분위 랭크)", f"{sel_row['M2']:.1f} 점", "앙상블 비중 40%")
+    with col_info4:
+        st.metric("M3 (Z-Score 정규화)", f"{sel_row['M3']:.1f} 점", "앙상블 비중 40%")
+
+    with st.expander("📐 M1, M2, M3 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
         st.markdown(
-            f"**{sel_row['Name']} ({sel_tk})** | 스마트스코어: **{sel_row['SmartScore']:.1f}점** "
-            f"(M1: {sel_row['M1']:.1f} / M2: {sel_row['M2']:.1f} / M3: {sel_row['M3']:.1f}) | {sel_row['Signal']}"
+            """
+            **SmartScore 앙상블 공식**:  
+            $$\\text{SmartScore} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$$
+            각 서브 모델($M_1, M_2, M_3$)은 **기관 수급 점수(55%)**와 **가격 래깅/소외 점수(45%)**의 결합으로 산출됩니다.
+            """
         )
-        dt_df = pd.DataFrame(sel_row["details"])
-        dt_df.columns = ["기관명", "구분", "매수주식수", "매수금액($M)"]
-        st.dataframe(dt_df, use_container_width=True, hide_index=True)
+        b_col1, b_col2 = st.columns(2)
+        with b_col1:
+            st.markdown("##### 🏛️ 기관 수급 지표 (전체 비중 55%)")
+            st.write(f"- **매수 기관 수 (비중 35%)**: {sel_row['Fund_Count']}개 사")
+            st.write(f"- **순유입 대금 (비중 35%)**: ${sel_row['Inflow_M']:,.1f} M (약 {sel_row['Inflow_M']*13.5:,.0f} 억원)")
+            st.write(f"- **신규/추가 주식수 (비중 30%)**: {sel_row['Shares_Sum']:,} 주")
+            
+        with b_col2:
+            st.markdown("##### 📉 가격 소외/래깅 지표 (전체 비중 45%)")
+            st.write(f"- **기간 상대 수익률 (비중 60%)**: {sel_row['Rel_Return']:+.1f}% *(낮을수록 저평가 가점)*")
+            st.write(f"- **52주 최고가 괴리율 (비중 40%)**: {sel_row['Dist_52W']:.1f}% *(낙폭 과대 시 가점)*")
+            st.write(f"- **A/D Line(매집 강도) 통과 여부**: {'✅ PASS (수급 양호)' if sel_row['AD_Pass'] else '❌ FAIL (분산 우려)'}")
+
+    # 기관별 상세 매수 내역
+    st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록")
+    dt_df = pd.DataFrame(sel_row["details"])
+    dt_df.columns = ["기관명", "매수구분", "매수주식수", "매수금액($M)"]
+    st.dataframe(dt_df, use_container_width=True, hide_index=True)

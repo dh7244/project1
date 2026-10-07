@@ -286,7 +286,6 @@ def calc_score(df, sector_neutral=False):
     z_comp = 0.55 * np.nan_to_num(z_inst) + 0.45 * np.nan_to_num(z_lag)
     d["M3"] = (stats.norm.cdf(z_comp) * 100.0).round(1)
     
-    # ⭐️ SML 점수(Smart Money Lag Score) 앙상블 공식
     raw_sml = 0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]
     d["SML_Score"] = raw_sml.round(1).fillna(50.0)
 
@@ -316,9 +315,8 @@ def calc_score(df, sector_neutral=False):
 
 # --- UI 레이아웃 ---
 st.title("🎯 SEC 13F SML 레이더 v1.5")
-st.caption("스마트머니 래그(SML) 분석 | 3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 검증 | 섹터 중립화")
+st.caption("스마트머니 래그(SML) 분석 | 3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 수치화 검증 | 섹터 중립화")
 
-# 💡 상세 가이드 Expander
 with st.expander("📖 SML 점수 및 퀀트 팩터(M1·M2·M3) 상세 가이드 (필독)", expanded=False):
     st.markdown(
         """
@@ -328,36 +326,18 @@ with st.expander("📖 SML 점수 및 퀀트 팩터(M1·M2·M3) 상세 가이드
         * **종합 공식**: 
           $$\\text{SML 점수} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$$
         * **내부 평가 비중**: 모든 모델은 **기관 수급 강도(55%)** + **주가 저평가/소외도(45%)**를 결합하여 산출됩니다.
-          * 수급 지표: 매수 참여 기관 수(35%) + 순유입 대금(35%) + 순증가 주식수(30%)
-          * 소외도 지표: 최근 6개월 기간 수익률(60%, 낮을수록 가점) + 52주 최고가 괴리율(40%, 낙폭 클수록 가점)
 
         ---
         ### 2. 세부 팩터 모델(M1, M2, M3)의 작동 원리
-        * **M1 (선형 스케일 모델 / 20%)**:  
-          * 데이터를 최솟값 0점, 최댓값 100점으로 정직하게 비례 변환합니다.  
-          * **특징**: 수천억~수조 원 단위의 압도적인 금액이나 대량 주식이 유입된 **초대형 매집주**가 높은 점수를 받습니다.
-        * **M2 (백분위 순위 모델 / 40%)**:  
-          * 절대적인 금액 차이를 배제하고, 전체 종목 중 상대적으로 몇 등(상위 몇 %)인지로 점수를 부여합니다.  
-          * **특징**: 특정 1~2개 종목이 비정상적으로 큰 자금을 빨아들여 전체 랭킹이 왜곡되는 **극단적 이상치(Outlier)를 완화**하고 건전한 순위를 보장합니다.
-        * **M3 (Z-Score 정규분포 모델 / 40%)**:  
-          * 데이터의 평균과 표준편차($Z$-Score)를 측정한 뒤, 정규분포 누적확률함수(CDF)를 적용해 점수화합니다.  
-          * **특징**: 평상시 수급 수준을 벗어나 **통계적으로 이례적인 자금 집중 징후(Spike)**를 정밀 포착합니다.
+        * **M1 (선형 스케일 / 20%)**: 수천억~수조 원 규모의 압도적인 금액/주식이 유입된 **초대형 매집주**가 높은 점수를 받습니다.
+        * **M2 (백분위 순위 / 40%)**: 절대 금액 차이를 배제하고 상대 순위(상위 %)로 변환하여 **극단적 이상치 왜곡을 완화**합니다.
+        * **M3 (Z-Score 정규화 / 40%)**: 평균 대비 통계적으로 이례적인 **자금 집중 징후(Spike)**를 정밀 포착합니다.
 
         ---
-        ### 3. 마이크로스트럭처(A/D Line)와 실전 투자 시그널 대응법
-        13F 공시는 분기 마감 후 최대 45일 뒤에 제출되므로 **'공시 시점에는 이미 기관이 차익실현 중일 수 있는 지연 리스크'**가 존재합니다. 시스템은 이를 차단하기 위해 최근 10거래일 **A/D Line(축적/분산선)**의 자금 유출입을 기술적으로 교차 검증합니다.
-
-        * 🟢 **STRONG_BUY (적극 매수 검토)**:  
-          * SML 75점 이상 + A/D Line 통과(PASS)  
-          * 기관 매집 규모가 크고 주가도 매력적이며, 최근 2주간 차트에서도 장중 고가 마감(자금 유입)이 확인된 최우선 관심주.
-        * 🔵 **ACCUMULATE (분할 매수)**:  
-          * SML 60점 이상 + A/D Line 통과(PASS)  
-          * 수급 밸런스가 우수하고 바닥 다지기가 확인되어 안정적인 분할 접근이 적합한 종목.
-        * 🟡 **WATCH_LAG (관망 / 매수 보류)**:  
-          * SML 60점 이상이나, A/D Line 탈락(FAIL)  
-          * **주의**: 지난 분기 기관 매수세는 컸으나, 최근 2주간 차트에서 음봉 밀림/매도 물량이 출회 중인 상태입니다. 지금 바로 사지 말고 **주가가 횡보하며 바닥 지지선을 만들 때까지 관심종목으로 관망**해야 합니다.
-        * ⚪ **NO_DATA (추천 제외)**:  
-          * 비상장 주식, 지분 증서, 사모사채 등 시세가 없어 검증이 불가능한 종목.
+        ### 3. 마이크로스트럭처(A/D Line 매집강도)와 실전 투자 시그널
+        13F 공시는 분기 마감 후 최대 45일 뒤에 제출되므로 **'공시 시점에는 이미 기관이 차익실현 중일 수 있는 지연 리스크'**를 방지하기 위해 최근 10거래일 **A/D Line(축적/분산선)**의 자금 유출입을 기술적으로 교차 검증합니다.
+        * **A/D 10일 변화율**: 최근 2주간 누적 자금 유입선이 상승했는지를 백분율(%)로 추적.
+        * **평균 CLV(장중 매집 비율)**: -1.0(최저가 마감/매도 투하) ~ +1.0(최고가 마감/강한 매집) 사이에서 장중 매수세 우위를 측정.
         """
     )
 
@@ -488,8 +468,9 @@ if run_btn:
             status_box.markdown(f"📈 **[2단계: 시세/팩터 검증 {s_idx+1}/{tot_stocks}]** `{d['name'][:25]}` (티커: `{tk}`) 데이터 분석 중...")
             prog.progress(55 + int(((s_idx + 1) / max(tot_stocks, 1)) * 45))
             
-            rel_ret, dist_52w, ad_pass, cur_p = 0.0, 0.0, False, 0.0
+            rel_ret, dist_52w, ad_pass, cur_p, base_p = 0.0, 0.0, False, 0.0, 0.0
             price_chg, pct_chg = 0.0, 0.0
+            ad_chg_pct, avg_clv = 0.0, 0.0
 
             if tk != "-":
                 try:
@@ -510,10 +491,19 @@ if run_btn:
                         price_chg = cur_p - base_p
                         pct_chg = (price_chg / base_p) * 100.0 if base_p > 0 else 0.0
                         
+                        # A/D Line 및 장중 매집강도(CLV) 정량 계산
                         denom = (hist["High"] - hist["Low"]).replace(0, 1e-9)
-                        clv = ((hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])) / denom
-                        ad = (clv * hist["Volume"]).cumsum()
-                        ad_pass = bool(ad.iloc[-1] >= ad.iloc[-10])
+                        clv_series = ((hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])) / denom
+                        ad_series = (clv_series * hist["Volume"]).cumsum()
+                        
+                        ad_cur = float(ad_series.iloc[-1])
+                        ad_prev = float(ad_series.iloc[-10])
+                        ad_pass = bool(ad_cur >= ad_prev)
+                        
+                        # 10일 A/D Line 변화율 및 최근 10일 평균 CLV(-1.0 ~ +1.0)
+                        denom_ad = abs(ad_prev) if abs(ad_prev) > 0 else 1.0
+                        ad_chg_pct = ((ad_cur - ad_prev) / denom_ad) * 100.0
+                        avg_clv = float(clv_series.iloc[-10:].mean())
                 except Exception:
                     pass
             
@@ -528,6 +518,9 @@ if run_btn:
                 "Rel_Return": round(rel_ret, 1),
                 "Dist_52W": round(dist_52w, 1),
                 "AD_Pass": ad_pass,
+                "AD_Chg_Pct": round(ad_chg_pct, 1),
+                "Avg_CLV": round(avg_clv, 2),
+                "Base_Price": round(base_p, 2),
                 "Price_Val": round(cur_p, 2),
                 "Price_Chg": round(price_chg, 2),
                 "Pct_Chg": round(pct_chg, 2),
@@ -575,13 +568,13 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
 
     table_df = df_show[[
         "Rank", "Ticker", "Name", "SML_Score", "M1", "M2", "M3",
-        "Signal", "Price_Val", "Price_Chg", "Pct_Chg",
+        "Signal", "Base_Price", "Price_Val", "Price_Chg", "Pct_Chg",
         "Fund_Count", "Inflow_M"
     ]].copy()
     
     table_df.columns = [
         "순위", "티커", "기업명", "SML 점수", "M1", "M2", "M3",
-        "투자시그널", "현재가($)", "공시후변동($)", "공시후변동률(%)",
+        "투자시그널", "공시일주가($)", "현재가($)", "공시후변동($)", "공시후변동률(%)",
         "기관수", "유입액($M)"
     ]
 
@@ -600,6 +593,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
             "M1": st.column_config.NumberColumn(format="%.1f"),
             "M2": st.column_config.NumberColumn(format="%.1f"),
             "M3": st.column_config.NumberColumn(format="%.1f"),
+            "공시일주가($)": st.column_config.NumberColumn(format="$%.2f"),
             "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
             "공시후변동($)": st.column_config.TextColumn(),
             "공시후변동률(%)": st.column_config.TextColumn(),
@@ -651,11 +645,17 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 st.write(f"- **신규/추가 주식수 (비중 30%)**: {sel_row['Shares_Sum']:,} 주")
                 
             with b_col2:
-                st.markdown("##### 📉 가격 소외/래깅 지표 (전체 비중 45%)")
+                st.markdown("##### 📉 가격 소외 및 매집강도(A/D) 지표 (전체 비중 45%)")
                 if sel_row["Price_Val"] > 0:
                     st.write(f"- **기간 상대 수익률 (비중 60%)**: {sel_row['Rel_Return']:+.1f}%")
                     st.write(f"- **52주 최고가 괴리율 (비중 40%)**: {sel_row['Dist_52W']:.1f}%")
-                    st.write(f"- **A/D Line(매집 강도) 통과 여부**: {'✅ PASS (수급 양호)' if sel_row['AD_Pass'] else '❌ FAIL (분산 우려)'}")
+                    st.write(f"- **공시일 주가 $\\rightarrow$ 현재가**: ${sel_row['Base_Price']:.2f} $\\rightarrow$ ${sel_row['Price_Val']:.2f}")
+                    
+                    # ⭐️ 매집강도 정량 수치 표기 (PASS/FAIL + 구체적 수치)
+                    pass_str = "✅ PASS (매집 유입 확인)" if sel_row["AD_Pass"] else "❌ FAIL (분산/차익매도 우려)"
+                    st.markdown(f"- **A/D Line 매집강도 판정**: **{pass_str}**")
+                    st.write(f"  * **최근 10일 A/D 추세 변화율**: `{sel_row['AD_Chg_Pct']:+.1f}%` *(양수일수록 매집 강함)*")
+                    st.write(f"  * **평균 장중 매집 강도 (CLV 점수)**: `{sel_row['Avg_CLV']:+.2f}` *(범위: -1.0 ~ +1.0 / +에 가까울수록 고가 마감)*")
                 else:
                     st.warning("⚠️ 실시간 시세 미조회 종목으로 가격 지표 및 추천 시그널이 산출되지 않았습니다.")
 

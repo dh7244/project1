@@ -255,7 +255,9 @@ def calc_score(df, sector_neutral=False):
     d["M2"] = (0.55 * m2_inst + 0.45 * m2_lag).round(1).fillna(50.0)
     z_comp = 0.55 * np.nan_to_num(z_inst) + 0.45 * np.nan_to_num(z_lag)
     d["M3"] = (stats.norm.cdf(z_comp) * 100.0).round(1)
-    d["SmartScore"] = (0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]).round(1).fillna(50.0)
+    
+    raw_smart = 0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]
+    d["SmartScore"] = raw_smart.round(1).fillna(50.0)
 
     sigs = []
     for _, r in d.iterrows():
@@ -271,7 +273,6 @@ def calc_score(df, sector_neutral=False):
             sigs.append("⚪ NEUTRAL")
     d["Signal"] = sigs
     
-    # rank 후 NaN 방어 처리
     d["Rank"] = d["SmartScore"].rank(ascending=False, method="min").fillna(len(d)).astype(int)
     return d.sort_values(by="Rank").reset_index(drop=True)
 
@@ -449,14 +450,14 @@ if "result_df" in st.session_state:
     st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
     
     table_df = df_show[[
-        "Rank", "Ticker", "Name", "SmartScore", "Signal",
-        "Price_Val", "Price_Chg", "Pct_Chg",
+        "Rank", "Ticker", "Name", "SmartScore", "M1", "M2", "M3",
+        "Signal", "Price_Val", "Price_Chg", "Pct_Chg",
         "Fund_Count", "Inflow_M"
     ]].copy()
     
     table_df.columns = [
-        "순위", "티커", "기업명", "스마트스코어", "투자시그널",
-        "현재가($)", "공시후변동($)", "공시후변동률(%)",
+        "순위", "티커", "기업명", "스마트스코어", "M1", "M2", "M3",
+        "투자시그널", "현재가($)", "공시후변동($)", "공시후변동률(%)",
         "기관수", "유입액($M)"
     ]
 
@@ -475,6 +476,10 @@ if "result_df" in st.session_state:
         color_return_kr,
         subset=["공시후변동($)", "공시후변동률(%)"]
     ).format({
+        "스마트스코어": "{:.1f}",
+        "M1": "{:.1f}",
+        "M2": "{:.1f}",
+        "M3": "{:.1f}",
         "현재가($)": lambda x: f"${x:.2f}" if x > 0 else "-",
         "공시후변동($)": lambda x: f"{'+' if x > 0 else ''}{x:.2f}" if x != 0 else "0.00",
         "공시후변동률(%)": lambda x: f"{'+' if x > 0 else ''}{x:.2f}%" if x != 0 else "0.00%"
@@ -488,7 +493,8 @@ if "result_df" in st.session_state:
     if sel_tk:
         sel_row = df_show[df_show["Ticker"] == sel_tk].iloc[0]
         st.markdown(
-            f"**{sel_row['Name']} ({sel_tk})** | 스마트스코어: **{sel_row['SmartScore']}점** ({sel_row['Signal']})"
+            f"**{sel_row['Name']} ({sel_tk})** | 스마트스코어: **{sel_row['SmartScore']:.1f}점** "
+            f"(M1: {sel_row['M1']:.1f} / M2: {sel_row['M2']:.1f} / M3: {sel_row['M3']:.1f}) | {sel_row['Signal']}"
         )
         dt_df = pd.DataFrame(sel_row["details"])
         dt_df.columns = ["기관명", "구분", "매수주식수", "매수금액($M)"]

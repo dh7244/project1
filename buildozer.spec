@@ -7,7 +7,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
 
 version = 1.5.0
-requirements = python3==3.11.9,kivy==2.3.0,openssl,requests,certifi,urllib3,charset-normalizer,idna
+requirements = python3,kivy==2.3.0,openssl,requests,certifi,urllib3,charset-normalizer,idna
 
 orientation = portrait
 fullscreen = 0
@@ -23,3 +23,4 @@ android.allow_backup = True
 [buildozer]
 log_level = 2
 warn_on_root = 1
+p4a.branch = develop

@@ -485,3 +485,362 @@ if run_btn:
         
         ranked = sorted(
             tot.items(),
+            key=lambda x: (len(x[1]["funds"]), x[1]["inflow"]),
+            reverse=True
+        )[:top_n]
+        
+        data_rows = []
+        tot_stocks = len(ranked)
+        
+        for s_idx, (cusip, d) in enumerate(ranked):
+            tk = resolve_ticker_advanced(cusip, d["name"])
+            status_box.markdown(f"📈 **[2단계: 시세/팩터 검증 {s_idx+1}/{tot_stocks}]** `{d['name'][:25]}` (티커: `{tk}`) 데이터 분석 중...")
+            prog.progress(55 + int(((s_idx + 1) / max(tot_stocks, 1)) * 45))
+            
+            rel_ret, dist_52w, ad_pass, cur_p, base_p = 0.0, 0.0, False, 0.0, 0.0
+            price_chg, pct_chg = 0.0, 0.0
+            ad_chg_pct, avg_clv = 0.0, 0.0
+
+            if tk != "-":
+                try:
+                    t = yf.Ticker(tk)
+                    hist = t.history(period="6mo", timeout=3)
+                    if not hist.empty and len(hist) > 10:
+                        cur_p = float(hist["Close"].iloc[-1])
+                        max_p = float(hist["High"].max())
+                        start_p = float(hist["Close"].iloc[0])
+                        
+                        dist_52w = ((cur_p - max_p) / max_p) * 100.0 if max_p > 0 else 0.0
+                        rel_ret = ((cur_p - start_p) / start_p) * 100.0 if start_p > 0 else 0.0
+                        
+                        target_dt = pd.to_datetime(d["f_date"]).tz_localize(hist.index.tz)
+                        hist_since = hist[hist.index >= target_dt]
+                        base_p = float(hist_since["Close"].iloc[0]) if not hist_since.empty else start_p
+                        
+                        price_chg = cur_p - base_p
+                        pct_chg = (price_chg / base_p) * 100.0 if base_p > 0 else 0.0
+                        
+                        denom = (hist["High"] - hist["Low"]).replace(0, 1e-9)
+                        clv_series = ((hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])) / denom
+                        ad_series = (clv_series * hist["Volume"]).cumsum()
+                        
+                        ad_cur = float(ad_series.iloc[-1])
+                        ad_prev = float(ad_series.iloc[-10])
+                        ad_pass = bool(ad_cur >= ad_prev)
+                        
+                        denom_ad = abs(ad_prev) if abs(ad_prev) > 0 else 1.0
+                        ad_chg_pct = ((ad_cur - ad_prev) / denom_ad) * 100.0
+                        avg_clv = float(clv_series.iloc[-10:].mean())
+                except Exception:
+                    pass
+            
+            data_rows.append({
+                "CUSIP": cusip,
+                "Ticker": tk,
+                "Name": d["name"],
+                "Sector": "Tech/Aerospace" if tk in ["STX", "FDX", "SPCX", "NVDA", "AAPL", "MSFT", "AVGO", "PLTR"] else "General",
+                "Fund_Count": len(d["funds"]),
+                "Inflow_M": round(d["inflow"] / 1000.0, 1),
+                "Shares_Sum": d["shares"],
+                "Rel_Return": round(rel_ret, 1),
+                "Dist_52W": round(dist_52w, 1),
+                "AD_Pass": ad_pass,
+                "AD_Chg_Pct": round(ad_chg_pct, 1),
+                "Avg_CLV": round(avg_clv, 2),
+                "Base_Price": round(base_p, 2),
+                "Price_Val": round(cur_p, 2),
+                "Price_Chg": round(price_chg, 2),
+                "Pct_Chg": round(pct_chg, 2),
+                "Filing_Date": d["f_date"],
+                "details": d["details"]
+            })
+        
+        status_box.markdown("✨ **SML 점수 앙상블 및 랭킹 정렬 완료!**")
+        prog.progress(100)
+        time.sleep(0.5)
+        
+        prog.empty()
+        status_box.empty()
+        
+        res_df = calc_score(pd.DataFrame(data_rows), sector_neutral=sec_neutral)
+        st.session_state["result_df"] = res_df
+        st.session_state["selected_ticker"] = res_df["Ticker"].iloc[0] if not res_df.empty else None
+
+if "result_df" in st.session_state and not st.session_state["result_df"].empty:
+    df_show = st.session_state["result_df"].copy()
+    
+    if valid_price_only:
+        df_show = df_show[df_show["Price_Val"] > 0].reset_index(drop=True)
+
+    if pass_only:
+        df_show = df_show[df_show["AD_Pass"] == True].reset_index(drop=True)
+        
+    latest_filing_str = df_show["Filing_Date"].max() if "Filing_Date" in df_show.columns else "2026-08-14"
+    prev_f_date, next_f_date, d_days = calc_next_filing_deadline(latest_filing_str)
+    
+    col_d1, col_d2, col_d3 = st.columns(3)
+    with col_d1:
+        st.metric("📅 직전 13F 공시 기준일", prev_f_date)
+    with col_d2:
+        st.metric("⏳ 다음 13F 공시 마감일", next_f_date)
+    with col_d3:
+        d_sign = f"D-{d_days}일" if d_days > 0 else f"D+{abs(d_days)}일"
+        st.metric("⏱️ 다음 공시까지 남은 기간", d_sign, "공시 45일 주기 모니터링")
+
+    def fmt_price_chg_symbol(v):
+        if pd.isna(v) or v == 0.0:
+            return "$0.00"
+        elif v > 0:
+            return f"🔴 +${v:.2f}"
+        else:
+            return f"🔵 -${abs(v):.2f}"
+
+    def fmt_pct_chg_symbol(v):
+        if pd.isna(v) or v == 0.0:
+            return "0.00%"
+        elif v > 0:
+            return f"🔴 +{v:.2f}%"
+        else:
+            return f"🔵 -{abs(v):.2f}%"
+
+    # ==========================================
+    # ⭐️ 탑픽 5 (Top Picks 5) 모듈 (A/D변화 포함)
+    # ==========================================
+    st.divider()
+    st.subheader("⭐ 퀀트 탑픽 5선 (Quant Top Picks)")
+
+    tab_pure, tab_theme = st.tabs(["🔥 SML 순수 득점 Top 5", "⚖️ 테마 분산 5대 엄선주"])
+
+    with tab_pure:
+        st.caption("💡 아래 종목의 행을 터치/클릭하면 하단 상세 팩터 분석으로 바로 연동됩니다.")
+        pure_candidates = df_show[(df_show["AD_Pass"] == True) & (df_show["Price_Val"] > 0)]
+        pure_top5 = pure_candidates.head(5) if len(pure_candidates) >= 5 else df_show.head(5)
+
+        if not pure_top5.empty:
+            p_table = pure_top5[["Ticker", "Name", "SML_Score", "Price_Val", "Pct_Chg", "AD_Chg_Pct", "Signal"]].copy()
+            p_table.insert(0, "선정", [f"Top {i+1}" for i in range(len(p_table))])
+            p_table.columns = ["선정", "티커", "기업명", "SML점수", "현재가($)", "공시후변동률", "A/D변화", "시그널"]
+            p_table["공시후변동률"] = p_table["공시후변동률"].apply(fmt_pct_chg_symbol)
+
+            p_event = st.dataframe(
+                p_table,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="pure_top5_grid",
+                column_config={
+                    "SML점수": st.column_config.NumberColumn(format="%.1f 점"),
+                    "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
+                    "A/D변화": st.column_config.NumberColumn(format="%+.1f%%"),
+                }
+            )
+            if p_event and p_event.selection and p_event.selection.rows:
+                sel_row_idx = p_event.selection.rows[0]
+                if sel_row_idx < len(pure_top5):
+                    st.session_state["selected_ticker"] = pure_top5.iloc[sel_row_idx]["Ticker"]
+
+    with tab_theme:
+        st.caption("💡 각 슬롯의 행을 터치/클릭하면 하단 상세 팩터 분석으로 바로 연동됩니다.")
+        valid_pool = df_show[df_show["Price_Val"] > 0].copy()
+        theme_picks = []
+        selected_tickers = set()
+
+        # Slot 1: 고래 매집
+        s1 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="Inflow_M", ascending=False)
+        if not s1.empty:
+            t1 = s1.iloc[0]
+            theme_picks.append({
+                "전략 슬롯": "🐋 고래 매집", "티커": t1["Ticker"], "기업명": t1["Name"],
+                "SML점수": t1["SML_Score"], "현재가($)": t1["Price_Val"], "공시후변동률": t1["Pct_Chg"],
+                "A/D변화": t1["AD_Chg_Pct"], "선정 이유": "순유입액 1위"
+            })
+            selected_tickers.add(t1["Ticker"])
+
+        # Slot 2: 바닥 소외
+        s2 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="Dist_52W", ascending=True)
+        if not s2.empty:
+            t2 = s2.iloc[0]
+            theme_picks.append({
+                "전략 슬롯": "📉 바닥 소외", "티커": t2["Ticker"], "기업명": t2["Name"],
+                "SML점수": t2["SML_Score"], "현재가($)": t2["Price_Val"], "공시후변동률": t2["Pct_Chg"],
+                "A/D변화": t2["AD_Chg_Pct"], "선정 이유": f"52주 낙폭 {t2['Dist_52W']:.1f}%"
+            })
+            selected_tickers.add(t2["Ticker"])
+
+        # Slot 3: 수급 급증
+        s3 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="M3", ascending=False)
+        if not s3.empty:
+            t3 = s3.iloc[0]
+            theme_picks.append({
+                "전략 슬롯": "⚡ 수급 급증", "티커": t3["Ticker"], "기업명": t3["Name"],
+                "SML점수": t3["SML_Score"], "현재가($)": t3["Price_Val"], "공시후변동률": t3["Pct_Chg"],
+                "A/D변화": t3["AD_Chg_Pct"], "선정 이유": f"M3 Z-Score {t3['M3']:.1f}점"
+            })
+            selected_tickers.add(t3["Ticker"])
+
+        # Slot 4: 차트 매집
+        s4 = valid_pool[(~valid_pool["Ticker"].isin(selected_tickers)) & (valid_pool["AD_Pass"] == True)].sort_values(by="AD_Chg_Pct", ascending=False)
+        if not s4.empty:
+            t4 = s4.iloc[0]
+            theme_picks.append({
+                "전략 슬롯": "🌊 차트 매집", "티커": t4["Ticker"], "기업명": t4["Name"],
+                "SML점수": t4["SML_Score"], "현재가($)": t4["Price_Val"], "공시후변동률": t4["Pct_Chg"],
+                "A/D변화": t4["AD_Chg_Pct"], "선정 이유": f"A/D {t4['AD_Chg_Pct']:+.1f}%"
+            })
+            selected_tickers.add(t4["Ticker"])
+
+        # Slot 5: 밸류 앙상블
+        s5 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="M2", ascending=False)
+        if not s5.empty:
+            t5 = s5.iloc[0]
+            theme_picks.append({
+                "전략 슬롯": "💎 밸류 앙상블", "티커": t5["Ticker"], "기업명": t5["Name"],
+                "SML점수": t5["SML_Score"], "현재가($)": t5["Price_Val"], "공시후변동률": t5["Pct_Chg"],
+                "A/D변화": t5["AD_Chg_Pct"], "선정 이유": f"M2 순위 {t5['M2']:.1f}점"
+            })
+            selected_tickers.add(t5["Ticker"])
+
+        if theme_picks:
+            t_df = pd.DataFrame(theme_picks)
+            t_df["공시후변동률"] = t_df["공시후변동률"].apply(fmt_pct_chg_symbol)
+
+            t_event = st.dataframe(
+                t_df,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="theme_top5_grid",
+                column_config={
+                    "SML점수": st.column_config.NumberColumn(format="%.1f 점"),
+                    "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
+                    "A/D변화": st.column_config.NumberColumn(format="%+.1f%%"),
+                }
+            )
+            if t_event and t_event.selection and t_event.selection.rows:
+                sel_row_idx = t_event.selection.rows[0]
+                if sel_row_idx < len(t_df):
+                    st.session_state["selected_ticker"] = t_df.iloc[sel_row_idx]["티커"]
+
+    st.divider()
+
+    st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
+    st.caption("💡 **표에서 확인하고 싶은 기업의 행을 터치/클릭**하면 바로 아래에 상세 팩터 분석 및 매수 기관 정보가 연동됩니다.")
+
+    table_df = df_show[[
+        "Rank", "Ticker", "Name", "SML_Score", "M1", "M2", "M3",
+        "Signal", "Base_Price", "Price_Val", "Price_Chg", "Pct_Chg",
+        "Fund_Count", "Inflow_M"
+    ]].copy()
+    
+    table_df.columns = [
+        "순위", "티커", "기업명", "SML 점수", "M1", "M2", "M3",
+        "투자시그널", "공시일주가($)", "현재가($)", "공시후변동($)", "공시후변동률(%)",
+        "기관수", "유입액($M)"
+    ]
+
+    table_df["공시후변동($)"] = table_df["공시후변동($)"].apply(fmt_price_chg_symbol)
+    table_df["공시후변동률(%)"] = table_df["공시후변동률(%)"].apply(fmt_pct_chg_symbol)
+
+    event = st.dataframe(
+        table_df,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        column_config={
+            "순위": st.column_config.NumberColumn(format="%d"),
+            "SML 점수": st.column_config.NumberColumn(format="%.1f 점"),
+            "M1": st.column_config.NumberColumn(format="%.1f"),
+            "M2": st.column_config.NumberColumn(format="%.1f"),
+            "M3": st.column_config.NumberColumn(format="%.1f"),
+            "공시일주가($)": st.column_config.NumberColumn(format="$%.2f"),
+            "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
+            "공시후변동($)": st.column_config.TextColumn(),
+            "공시후변동률(%)": st.column_config.TextColumn(),
+            "기관수": st.column_config.NumberColumn(format="%d 개"),
+            "유입액($M)": st.column_config.NumberColumn(format="$%.1f M"),
+        }
+    )
+
+    if event and event.selection and event.selection.rows:
+        sel_idx = event.selection.rows[0]
+        if sel_idx < len(df_show):
+            st.session_state["selected_ticker"] = df_show.iloc[sel_idx]["Ticker"]
+    elif "selected_ticker" not in st.session_state or st.session_state["selected_ticker"] not in df_show["Ticker"].values:
+        if not df_show.empty:
+            st.session_state["selected_ticker"] = df_show["Ticker"].iloc[0]
+
+    if not df_show.empty:
+        current_tk = st.session_state["selected_ticker"]
+        sel_row = df_show[df_show["Ticker"] == current_tk].iloc[0]
+
+        st.divider()
+        
+        # --- 종목 상세 분석 및 팩터 비중 분해 영역 ---
+        st.subheader(f"🔍 [{current_tk}] {sel_row['Name']} 심층 팩터 분석 & 매수 기관")
+        
+        col_info1, col_info2, col_info3, col_info4 = st.columns(4)
+        with col_info1:
+            st.metric("종합 SML 점수", f"{sel_row['SML_Score']:.1f} 점", sel_row['Signal'])
+        with col_info2:
+            st.metric("M1 (선형 스케일)", f"{sel_row['M1']:.1f} 점", "앙상블 비중 20%")
+        with col_info3:
+            st.metric("M2 (백분위 순위)", f"{sel_row['M2']:.1f} 점", "앙상블 비중 40%")
+        with col_info4:
+            st.metric("M3 (Z-Score 정규화)", f"{sel_row['M3']:.1f} 점", "앙상블 비중 40%")
+
+        with st.expander("📐 SML 점수 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
+            st.markdown(
+                """
+                **SML 점수 앙상블 공식**:  
+                $$\\text{SML 점수} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$$
+                각 서브 모델($M_1, M_2, M_3$)은 **스마트머니 수급 점수(55%)**와 **주가 래깅/소외 점수(45%)**의 결합으로 산출됩니다.
+                """
+            )
+            b_col1, b_col2 = st.columns(2)
+            with b_col1:
+                st.markdown("##### 🏛️ 스마트머니 수급 지표 (전체 비중 55%)")
+                st.write(f"- **매수 기관 수 (비중 35%)**: {sel_row['Fund_Count']}개 사")
+                st.write(f"- **순유입 대금 (비중 35%)**: ${sel_row['Inflow_M']:,.1f} M")
+                st.write(f"- **신규/추가 주식수 (비중 30%)**: {sel_row['Shares_Sum']:,} 주")
+                
+            with b_col2:
+                st.markdown("##### 📉 가격 소외 및 매집강도(A/D) 지표 (전체 비중 45%)")
+                if sel_row["Price_Val"] > 0:
+                    st.write(f"- **기간 상대 수익률 (비중 60%)**: {sel_row['Rel_Return']:+.1f}%")
+                    st.write(f"- **52주 최고가 괴리율 (비중 40%)**: {sel_row['Dist_52W']:.1f}%")
+                    
+                    chg_sign = "🔴 +" if sel_row["Price_Chg"] > 0 else ("🔵 -" if sel_row["Price_Chg"] < 0 else "")
+                    chg_abs = abs(sel_row["Price_Chg"])
+                    pct_str = f"{sel_row['Pct_Chg']:+.2f}%"
+                    st.write(
+                        f"- **공시 시점 대비 주가 추이**: \\${sel_row['Base_Price']:.2f} → **\\${sel_row['Price_Val']:.2f}** "
+                        f"({chg_sign}\\${chg_abs:.2f}, {pct_str})"
+                    )
+                    
+                    pass_str = "✅ PASS (매집 유입 확인)" if sel_row["AD_Pass"] else "❌ FAIL (분산/차익매도 우려)"
+                    st.markdown(f"- **A/D Line 매집강도 판정**: **{pass_str}**")
+                    st.write(f"  * **최근 10일 A/D 추세 변화율**: `{sel_row['AD_Chg_Pct']:+.1f}%` *(양수일수록 매집 강함)*")
+                    st.write(f"  * **평균 장중 매집 강도 (CLV 점수)**: `{sel_row['Avg_CLV']:+.2f}` *(범위: -1.0 ~ +1.0 / +에 가까울수록 고가 마감)*")
+                else:
+                    st.warning("⚠️ 실시간 시세 미조회 종목으로 가격 지표 및 추천 시그널이 산출되지 않았습니다.")
+
+        # 매수 기관 목록
+        st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록")
+        dt_df = pd.DataFrame(sel_row["details"])
+        dt_df = dt_df.sort_values(by="val_m", ascending=False).reset_index(drop=True)
+        dt_df.columns = ["기관명", "매수구분", "매수주식수", "매수금액($M)"]
+        
+        st.dataframe(
+            dt_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "매수주식수": st.column_config.NumberColumn(format="%d 주"),
+                "매수금액($M)": st.column_config.NumberColumn(format="$%.1f M"),
+            }
+        )
+    else:
+        st.info("선택한 필터 조건에 부합하는 종목이 없습니다.")

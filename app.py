@@ -11,7 +11,6 @@ import requests
 from scipy import stats
 import streamlit as st
 import yfinance as yf
-from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(
     page_title="13F SML Radar v1.6 (Large-Cap Weighted)",
@@ -317,15 +316,15 @@ def calc_score(df, sector_neutral=False):
     z_comp = 0.55 * np.nan_to_num(z_inst) + 0.45 * np.nan_to_num(z_lag)
     d["M3"] = (stats.norm.cdf(z_comp) * 100.0).round(1)
     
-    # 기본 13F SML 앙상블 점수 (수급 + 주가소외도)
+    # 13F SML 앙상블 기본 점수
     raw_sml = 0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]
     d["SML_Raw"] = raw_sml.round(1).fillna(50.0)
 
-    # ⭐️ 시가총액 로그 스케일링 팩터 (대형주 우대) 결합
+    # 시가총액 로그 스케일링 팩터 (대형주 우대) 결합
     log_mcaps = d["Market_Cap_B"].apply(lambda x: math.log(max(x, 0.01)))
     d["M_Cap"] = min_max(log_mcaps).round(1)
 
-    # 최종 SML 점수: 기존 앙상블 85% + 대형주 시총 팩터 15%
+    # 최종 SML 점수: 앙상블 85% + 시총 팩터 15%
     d["SML_Score"] = (0.85 * d["SML_Raw"] + 0.15 * d["M_Cap"]).round(1).fillna(50.0)
 
     sigs = []
@@ -543,7 +542,6 @@ if run_btn:
                         ad_chg_pct = ((ad_cur - ad_prev) / denom_ad) * 100.0
                         avg_clv = float(clv_series.iloc[-10:].mean())
 
-                    # 시가총액($B) 추출
                     raw_mcap = getattr(t.fast_info, "market_cap", 0.0)
                     if raw_mcap and raw_mcap > 0:
                         mcap_b = round(float(raw_mcap) / 1e9, 2)
@@ -791,7 +789,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
             st.session_state["selected_ticker"] = df_show.iloc[sel_idx]["Ticker"]
     elif "selected_ticker" not in st.session_state or st.session_state["selected_ticker"] not in df_show["Ticker"].values:
         if not df_show.empty:
-            st.session_state["selected_ticker"] = df_show["Ticker"].iloc[0]
+            st.session_state["selected_ticker"] = df_show.iloc[0]["Ticker"]
 
     if not df_show.empty:
         current_tk = st.session_state["selected_ticker"]
@@ -867,65 +865,5 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 "매수금액($M)": st.column_config.NumberColumn(format="$%.1f M"),
             }
         )
-
-# ==========================================
-# [하단 공통 댓글창] Google Sheets 기반 영구 저장
-# ==========================================
-st.divider()
-st.subheader("💬 13F 투자 토론 & 피드백 (익명 게시판)")
-st.caption("로그인 없이 자유롭게 의견이나 메모를 남길 수 있으며, 데이터는 실시간 영구 보관됩니다.")
-
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    comments_df = conn.read(ttl=5)
-    if comments_df is None or comments_df.empty:
-        comments_df = pd.DataFrame(columns=["timestamp", "author", "comment"])
     else:
-        comments_df = comments_df.dropna(how="all")
-except Exception:
-    conn = None
-    comments_df = pd.DataFrame(columns=["timestamp", "author", "comment"])
-
-with st.form("comment_form", clear_on_submit=True):
-    col_c1, col_c2 = st.columns([1, 4])
-    with col_c1:
-        author_input = st.text_input("닉네임", placeholder="익명", max_chars=15)
-    with col_c2:
-        comment_input = st.text_input("댓글 내용", placeholder="이번 분기 기관 수급에 대한 의견이나 피드백을 남겨주세요.", max_chars=300)
-    
-    submit_btn = st.form_submit_button("💬 댓글 등록", type="primary")
-
-if submit_btn:
-    if not comment_input.strip():
-        st.warning("댓글 내용을 입력해 주세요.")
-    elif conn is None:
-        st.error("Google Sheets Secrets 설정이 필요합니다. 관리자 가이드를 확인해 주세요.")
-    else:
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        author_val = author_input.strip() if author_input.strip() else "익명"
-        new_row = pd.DataFrame([{
-            "timestamp": now_str,
-            "author": author_val,
-            "comment": comment_input.strip()
-        }])
-        updated_df = pd.concat([comments_df, new_row], ignore_index=True)
-        try:
-            conn.update(data=updated_df)
-            st.success("댓글이 성공적으로 등록되었습니다!")
-            time.sleep(0.5)
-            st.rerun()
-        except Exception as e:
-            st.error(f"댓글 저장 중 오류가 발생했습니다: {e}")
-
-if not comments_df.empty:
-    st.markdown("##### 📜 최근 등록된 댓글")
-    for _, c_row in comments_df.iloc[::-1].iterrows():
-        ts = str(c_row.get("timestamp", ""))
-        auth = str(c_row.get("author", "익명"))
-        msg = str(c_row.get("comment", ""))
-        if msg.strip():
-            with st.container(border=True):
-                st.markdown(f"**👤 {auth}** `({ts})`")
-                st.write(msg)
-else:
-    st.info("아직 등록된 댓글이 없습니다. 첫 번째 의견을 남겨보세요!")
+        st.info("선택한 필터 조건에 부합하는 종목이 없습니다.")

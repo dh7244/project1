@@ -7,13 +7,13 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
 
 version = 1.5.0
-requirements = python3,kivy==2.3.0,requests,certifi,urllib3,charset-normalizer,idna
-
+requirements = python3==3.11.9,kivy==2.3.0,openssl,requests,certifi,urllib3,charset-normalizer,idna
 
 orientation = portrait
 fullscreen = 0
 
 android.permissions = INTERNET,ACCESS_NETWORK_STATE
+android.accept_sdk_license = True
 android.api = 31
 android.minapi = 21
 android.ndk = 25b

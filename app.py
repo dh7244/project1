@@ -17,117 +17,137 @@ st.set_page_config(
     layout="wide"
 )
 
-USER_AGENT = "QuantStreamlitApp research_desk@internalorg.com"
+USER_AGENT = "QuantStreamlitApp quant_analyst@quantfirm.org"
 HEADERS = {"User-Agent": USER_AGENT}
 
 DEFAULT_FUNDS = {
-    "버크셔 해서웨이 (Berkshire Hathaway)": "0001067983",
-    "브릿지워터 (Bridgewater Associates)": "0001350694",
+    # 1. 퀀트 & 멀티스트래티지 헤지펀드
     "시타델 (Citadel Advisors)": "0001423053",
     "르네상스 테크놀로지 (Renaissance Tech)": "0001037389",
     "밀레니엄 매니지먼트 (Millennium Mgmt)": "0001273087",
     "투 시그마 (Two Sigma Investments)": "0001179392",
     "D.E. 쇼 (D.E. Shaw & Co.)": "0001009207",
-    "포인트72 (Point72 Asset Mgmt)": "0001603466",
-    "소로스 펀드 (Soros Fund Mgmt)": "0001029160",
+    "포인트72 (Point72 / Steve Cohen)": "0001603466",
+    "AQR 캐피탈 (AQR Capital Mgmt)": "0001167557",
+    "브릿지워터 (Bridgewater Associates)": "0001350694",
+    "발리아스니 (Balyasny Asset Mgmt)": "0001262279",
+    "엑소더스포인트 (ExodusPoint Capital)": "0001744489",
+    
+    # 2. 전설적 투자자 & 행동주의 / 롱숏 헤지펀드
+    "버크셔 해서웨이 (Berkshire Hathaway)": "0001067983",
     "타이거 글로벌 (Tiger Global)": "0001167483",
-    "코튜 매니지먼트 (Coatue Management)": "0001422183",
-    "아크 인베스트 (ARK Investment)": "0001697748",
-    "베일리 기포드 (Baillie Gifford)": "0001088875",
+    "코튜 매니지먼트 (Coatue / Philippe Laffont)": "0001422183",
+    "바이킹 글로벌 (Viking Global / Halvorsen)": "0001103804",
+    "퍼싱 스퀘어 (Pershing Square / Ackman)": "0001336528",
+    "아팔루사 (Appaloosa / David Tepper)": "0001006438",
+    "듀케인 패밀리오피스 (Duquesne / Druckenmiller)": "0001536411",
+    "소로스 펀드 (Soros Fund Management)": "0001029160",
+    "서드 포인트 (Third Point / Dan Loeb)": "0001040273",
+    "그린라이트 캐피탈 (Greenlight / David Einhorn)": "0001079114",
+    "바우포스트 그룹 (Baupost / Seth Klarman)": "0001061768",
+    "론 파인 캐피탈 (Lone Pine / Steve Mandel)": "0001061165",
+    "아크 인베스트 (ARK Invest / Cathie Wood)": "0001697748",
+    "엘리엇 매니지먼트 (Elliott Investment Mgmt)": "0001048445",
+    "스타보드 밸류 (Starboard Value)": "0001513824",
+    "아이칸 엔터프라이즈 (Carl Icahn)": "0000921669",
+    "페어홀름 (Fairholme Capital / Berkowitz)": "0001111565",
+    "세스콰하나 (Susquehanna International)": "0001446194",
+    "제인 스트리트 (Jane Street Group)": "0001599947",
+    "위즈덤트리 (WisdomTree Inc)": "0001350487",
+
+    # 3. 글로벌 초대형 자산운용사
     "블랙록 (BlackRock Fund Advisors)": "0001364742",
     "뱅가드 그룹 (Vanguard Group)": "0000102909",
     "피델리티 (FMR LLC)": "0000315066",
     "스테이트 스트리트 (State Street Corp)": "0000093751",
-    "JP모건 체이스 (JPMorgan Chase)": "0000019617",
+    "웰링턴 매니지먼트 (Wellington Management)": "0000902219",
+    "T. 로우 프라이스 (T. Rowe Price)": "0000080255",
+    "캐피탈 리서치 (Capital Research Global)": "0001423052",
+    "베일리 기포드 (Baillie Gifford & Co)": "0001088875",
+    "인베스코 (Invesco Ltd.)": "0000914208",
+    "노던 트러스트 (Northern Trust Corp)": "0000073124",
+    "프랭클린 리소시스 (Franklin Resources)": "0000038777",
+    "얼라이언스 번스틴 (AllianceBernstein)": "0001109448",
+
+    # 4. 글로벌 대형 IB 및 프라이빗 뱅킹
+    "JP모건 체이스 (JPMorgan Chase & Co)": "0000019617",
     "골드만 삭스 (Goldman Sachs Group)": "0000886982",
     "모건 스탠리 (Morgan Stanley)": "0000895421",
-    "서드 포인트 (Third Point / Loeb)": "0001040273",
-    "그린라이트 캐피탈 (Greenlight Capital)": "0001079114",
-    "퍼싱 스퀘어 (Pershing Square / Ackman)": "0001336528",
-    "앱팔루사 (Appaloosa Mgmt / Tepper)": "0001006438",
-    "드러켄밀러 (Duquesne Family Office)": "0001536411"
+    "뱅크 오브 아메리카 (Bank of America)": "0000070858",
+    "시티그룹 (Citigroup Inc)": "0000831001",
+    "웰스 파고 (Wells Fargo & Co)": "0000072971",
+    "UBS 그룹 (UBS Group AG)": "0001610520",
+    "노르웨이 국부펀드 (Norges Bank)": "0001270787"
 }
 
-TICKER_MAP = {
-    "037833100": "AAPL",
-    "594918104": "MSFT",
-    "67066G104": "NVDA",
-    "023135106": "AMZN",
-    "02079K305": "GOOGL",
-    "02079K107": "GOOG",
-    "30303M102": "META",
-    "88160R101": "TSLA",
-    "064058100": "AVGO",
-    "46625H100": "JPM",
-    "532457108": "LLY",
-    "931142103": "WMT",
-    "92826C839": "V",
-    "254687106": "DIS",
-    "69608A108": "PLTR",
-    "22788C105": "CRWD",
-    "874039100": "TSM",
-    "007903107": "AMD",
-    "74340W103": "QCOM",
-    "09247X101": "BLK",
-    "025816109": "AXP",
-    "060505104": "BAC",
-    "191216100": "KO",
-    "166764100": "CVX"
+@st.cache_data(ttl=86400)
+def load_sec_ticker_directory():
+    url = "https://www.sec.gov/files/company_tickers.json"
+    name_to_tk = {}
+    cik_to_tk = {}
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            for v in data.values():
+                tk = v.get("ticker", "").upper()
+                nm = re.sub(r'[^A-Z0-9]', '', v.get("title", "").upper())
+                cik = str(v.get("cik_str", "")).zfill(10)
+                if tk:
+                    if nm:
+                        name_to_tk[nm] = tk
+                    cik_to_tk[cik] = tk
+    except Exception:
+        pass
+    return name_to_tk, cik_to_tk
+
+NAME_DICT, CIK_DICT = load_sec_ticker_directory()
+
+COMMON_CUSIP_MAP = {
+    "037833100": "AAPL", "594918104": "MSFT", "67066G104": "NVDA", "023135106": "AMZN",
+    "02079K305": "GOOGL", "02079K107": "GOOG", "30303M102": "META", "88160R101": "TSLA",
+    "064058100": "AVGO", "46625H100": "JPM", "532457108": "LLY", "931142103": "WMT",
+    "92826C839": "V", "254687106": "DIS", "69608A108": "PLTR", "22788C105": "CRWD",
+    "874039100": "TSM", "007903107": "AMD", "74340W103": "QCOM", "09247X101": "BLK",
+    "025816109": "AXP", "060505104": "BAC", "191216100": "KO", "166764100": "CVX",
+    "713448108": "PEP", "478160104": "JNJ", "00206R102": "T", "91324P102": "UNH"
 }
 
-def clean_name(name):
+def clean_company_name(name):
     name = re.sub(
-        r'\b(INC|CORP|COMPANY|CO|LTD|HOLDINGS|HLDG|LLC|PLC|DE|NEW|CLASS [A-Z]|CL [A-Z]|COM)\b',
+        r'\b(INC|CORP|COMPANY|CO|LTD|HOLDINGS|HLDG|LLC|PLC|DE|NEW|CLASS [A-Z]|CL [A-Z]|COM|ORD|SPON|ADR)\b',
         '',
         name,
         flags=re.IGNORECASE
     )
     name = re.sub(r'[^a-zA-Z0-9 ]', ' ', name)
-    return ' '.join(name.split())
+    return ' '.join(name.split()).strip()
 
-def resolve_ticker(cusip, name):
-    if cusip in TICKER_MAP:
-        return TICKER_MAP[cusip]
-    cl = clean_name(name).split()
-    if cl and 1 <= len(cl[0]) <= 5 and cl[0].isalpha():
-        return cl[0].upper()
+def resolve_ticker_advanced(cusip, name):
+    if cusip in COMMON_CUSIP_MAP:
+        return COMMON_CUSIP_MAP[cusip]
+    
+    clean_n = re.sub(r'[^A-Z0-9]', '', name.upper())
+    if clean_n in NAME_DICT:
+        return NAME_DICT[clean_n]
+    
+    words = clean_company_name(name).split()
+    if words:
+        first_word = re.sub(r'[^A-Z0-9]', '', words[0].upper())
+        if len(first_word) >= 3:
+            for k, tk in NAME_DICT.items():
+                if k.startswith(first_word):
+                    return tk
+        if 1 <= len(words[0]) <= 5 and words[0].isalpha():
+            return words[0].upper()
+            
     return "-"
-
-@st.cache_data(ttl=86400)
-def search_sec_company(keyword):
-    url = "https://www.sec.gov/files/company_tickers.json"
-    try:
-        res = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=10
-        )
-        if res.status_code == 200:
-            data = res.json()
-            kw = keyword.lower().strip()
-            results = {}
-            for item in data.values():
-                title = item.get("title", "")
-                cik = str(item.get("cik_str", "")).zfill(10)
-                ticker = item.get("ticker", "")
-                if kw in title.lower() or kw in cik or kw == ticker.lower():
-                    results[f"{title} ({ticker})"] = cik
-                    if len(results) >= 10:
-                        break
-            return results
-    except Exception:
-        pass
-    return {}
 
 def get_filings(cik):
     time.sleep(0.12)
     url = f"https://data.sec.gov/submissions/CIK{str(cik).zfill(10)}.json"
     try:
-        res = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=10
-        )
+        res = requests.get(url, headers=HEADERS, timeout=10)
         if res.status_code != 200:
             return []
         filings = res.json()["filings"]["recent"]
@@ -150,11 +170,7 @@ def get_holdings(cik, acc):
     cik_clean = str(int(cik))
     url = f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc_clean}/"
     try:
-        res = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=10
-        )
+        res = requests.get(url, headers=HEADERS, timeout=10)
         if res.status_code != 200:
             return {}
         xmls = re.findall(r'href="([^"]+\.xml)"', res.text, re.IGNORECASE)
@@ -169,11 +185,7 @@ def get_holdings(cik, acc):
         if not target:
             return {}
         
-        xml_res = requests.get(
-            f"{url}{target}",
-            headers=HEADERS,
-            timeout=10
-        )
+        xml_res = requests.get(f"{url}{target}", headers=HEADERS, timeout=10)
         xml_clean = re.sub(r'\sxmlns="[^"]+"', '', xml_res.text, count=1)
         root = ET.fromstring(xml_clean)
         
@@ -184,7 +196,7 @@ def get_holdings(cik, acc):
             v_str = t.findtext("value", "0").replace(",", "").strip()
             try:
                 v = int(float(v_str))
-            except:
+            except Exception:
                 v = 0
             s_node = t.find(".//sshPrnamt")
             shares = int(float(s_node.text.replace(",", "").strip())) if (s_node is not None and s_node.text) else 0
@@ -193,12 +205,7 @@ def get_holdings(cik, acc):
                     h[cusip]["val"] += v
                     h[cusip]["shares"] += shares
                 else:
-                    h[cusip] = {
-                        "name": nm,
-                        "cusip": cusip,
-                        "val": v,
-                        "shares": shares
-                    }
+                    h[cusip] = {"name": nm, "cusip": cusip, "val": v, "shares": shares}
         return h
     except Exception:
         return {}
@@ -261,56 +268,30 @@ def calc_score(df, sector_neutral=False):
 
 # --- UI 레이아웃 ---
 st.title("🎯 SEC 13F 스마트스코어 & 시그널 v1.5")
-st.caption("3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 검증 | 섹터 중립화")
+st.caption("월가 Top 50 기관 전수 분석 | 3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 검증 | 섹터 중립화")
 
 if "custom_funds" not in st.session_state:
     st.session_state["custom_funds"] = dict(DEFAULT_FUNDS)
 
-with st.expander("🏛️ 분석 대상 기관 관리 (추가 / 삭제 / 프리셋 선택)", expanded=False):
-    st.markdown("#### 1. 새로운 기관 직접 추가")
-    add_col1, add_col2 = st.columns([2, 1])
-    with add_col1:
-        search_query = st.text_input(
-            "기관명 영문 검색어 또는 CIK 10자리 입력",
-            placeholder="예: Pershing, Softbank, 0001336528"
-        )
-    with add_col2:
-        st.write(" ")
-        st.write(" ")
-        if st.button("🔍 SEC 조회"):
-            if search_query:
-                if search_query.isdigit():
-                    cik_val = search_query.zfill(10)
-                    st.session_state["custom_funds"][f"직접등록 (CIK {search_query})"] = cik_val
-                    st.success(f"CIK {search_query} 등록 완료!")
-                else:
-                    found = search_sec_company(search_query)
-                    if found:
-                        st.session_state["found_cache"] = found
-                    else:
-                        st.warning("검색 결과가 없습니다. 철자나 CIK 번호를 확인하세요.")
+with st.expander(f"🏛️ 분석 대상 기관 관리 (총 {len(st.session_state['custom_funds'])}개 기관 등록됨)", expanded=False):
+    col_btn1, col_btn2 = st.columns([1, 1])
+    with col_btn1:
+        if st.button("전체 선택"):
+            st.session_state["sel_funds"] = list(st.session_state["custom_funds"].keys())
+    with col_btn2:
+        if st.button("전체 해제"):
+            st.session_state["sel_funds"] = []
 
-    if "found_cache" in st.session_state and st.session_state["found_cache"]:
-        selected_found = st.selectbox(
-            "검색된 기관 목록에서 선택하여 추가:",
-            list(st.session_state["found_cache"].keys())
-        )
-        if st.button("➕ 선택한 기관 분석 목록에 추가"):
-            st.session_state["custom_funds"][selected_found] = st.session_state["found_cache"][selected_found]
-            st.success(f"'{selected_found}' 추가되었습니다!")
-
-    st.markdown("#### 2. 이번 집계에 포함할 기관 선택")
+    default_selected = st.session_state.get("sel_funds", list(st.session_state["custom_funds"].keys()))
     selected_fund_names = st.multiselect(
-        "분석할 기관들을 선택하세요 (기본: 전체 선택)",
+        "분석할 기관들을 선택하세요:",
         options=list(st.session_state["custom_funds"].keys()),
-        default=list(st.session_state["custom_funds"].keys())
+        default=default_selected
     )
-
-st.divider()
 
 col1, col2, col3 = st.columns([1, 1, 1])
 with col1:
-    top_n = st.slider("최종 출력 종목 수 (상위 N개)", min_value=20, max_value=200, value=50, step=10)
+    top_n = st.slider("최종 출력 종목 수 (상위 N개)", min_value=20, max_value=300, value=50, step=10)
 with col2:
     sec_neutral = st.checkbox("섹터 중립화(Sector Neutral) 적용", value=False)
 with col3:
@@ -326,125 +307,171 @@ if st.button("🚀 13F 전수 수급 집계 & 퀀트 스코어링 실행", type=
     if not funds_to_analyze:
         st.error("최소 1개 이상의 기관을 선택해야 합니다.")
     else:
-        with st.spinner(f"선택된 {len(funds_to_analyze)}개 기관의 최신 13F 공시 및 시세 데이터 수집 중..."):
-            curr_records = []
-            prev_records = {}
+        status_box = st.empty()
+        prog = st.progress(0.0)
+        
+        curr_records = []
+        prev_records = {}
+        filing_dates = []
+        
+        fund_items = list(funds_to_analyze.items())
+        tot_cnt = len(fund_items)
+        
+        for idx, (name, cik) in enumerate(fund_items):
+            status_box.markdown(f"**[{idx+1}/{tot_cnt}]** `{name}` 최신 13F 공시 수집 중...")
+            prog.progress((idx + 1) / tot_cnt)
             
-            prog = st.progress(0.0)
-            fund_items = list(funds_to_analyze.items())
-            
-            for idx, (name, cik) in enumerate(fund_items):
-                prog.progress((idx + 1) / len(fund_items))
-                f = get_filings(cik)
-                if not f:
-                    continue
-                h1 = get_holdings(cik, f[0]["acc"])
-                for cusip, val in h1.items():
-                    curr_records.append({
-                        "cik": cik,
-                        "fund": name,
-                        "cusip": cusip,
-                        "name": val["name"],
-                        "val": val["val"],
-                        "shares": val["shares"]
-                    })
-                if len(f) > 1:
-                    h2 = get_holdings(cik, f[1]["acc"])
-                    for cusip, val in h2.items():
-                        prev_records[(cik, cusip)] = val
-            prog.empty()
-            
-            tot = {}
-            for r in curr_records:
-                k = (r["cik"], r["cusip"])
-                c = r["cusip"]
-                if k not in prev_records:
-                    diff_v = r["val"]
-                    diff_s = r["shares"]
-                else:
-                    p = prev_records[k]
-                    diff_v = max(0, r["val"] - p["val"]) if r["shares"] > p["shares"] else 0
-                    diff_s = max(0, r["shares"] - p["shares"]) if r["shares"] > p["shares"] else 0
-                
-                if diff_v > 0 or k not in prev_records:
-                    if c not in tot:
-                        tot[c] = {
-                            "name": r["name"],
-                            "funds": set(),
-                            "inflow": 0,
-                            "shares": 0,
-                            "details": []
-                        }
-                    tot[c]["funds"].add(r["fund"])
-                    tot[c]["inflow"] += diff_v
-                    tot[c]["shares"] += diff_s
-                    tot[c]["details"].append({
-                        "fund": r["fund"],
-                        "type": "신규" if k not in prev_records else "확대",
-                        "shares": diff_s,
-                        "val_m": round(diff_v / 1000.0, 1)
-                    })
-            
-            ranked = sorted(
-                tot.items(),
-                key=lambda x: (len(x[1]["funds"]), x[1]["inflow"]),
-                reverse=True
-            )[:top_n]
-            
-            data_rows = []
-            for cusip, d in ranked:
-                tk = resolve_ticker(cusip, d["name"])
-                rel_ret, dist_52w, ad_pass, cur_p = -15.0, -20.0, True, 0.0
-                
-                if tk != "-":
-                    try:
-                        t = yf.Ticker(tk)
-                        hist = t.history(period="3mo")
-                        if not hist.empty and len(hist) > 10:
-                            cur_p = hist["Close"].iloc[-1]
-                            dist_52w = ((cur_p - hist["High"].max()) / hist["High"].max()) * 100.0
-                            rel_ret = ((cur_p - hist["Close"].iloc[0]) / hist["Close"].iloc[0]) * 100.0
-                            clv = (
-                                (hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])
-                            ) / (hist["High"] - hist["Low"] + 1e-9)
-                            ad = (clv * hist["Volume"]).cumsum()
-                            ad_pass = ad.iloc[-1] >= ad.iloc[-10]
-                    except:
-                        pass
-                
-                data_rows.append({
-                    "CUSIP": cusip,
-                    "Ticker": tk,
-                    "Name": d["name"],
-                    "Sector": "Tech" if tk in ["NVDA", "AAPL", "MSFT", "AVGO", "PLTR"] else "General",
-                    "Fund_Count": len(d["funds"]),
-                    "Inflow_M": round(d["inflow"] / 1000.0, 1),
-                    "Shares_Sum": d["shares"],
-                    "Rel_Return": round(rel_ret, 1),
-                    "Dist_52W": round(dist_52w, 1),
-                    "AD_Pass": ad_pass,
-                    "Price": f"${cur_p:.2f}" if cur_p > 0 else "-",
-                    "details": d["details"]
+            f = get_filings(cik)
+            if not f:
+                continue
+            filing_dates.append(f[0]["date"])
+            h1 = get_holdings(cik, f[0]["acc"])
+            for cusip, val in h1.items():
+                curr_records.append({
+                    "cik": cik, "fund": name, "cusip": cusip,
+                    "name": val["name"], "val": val["val"], "shares": val["shares"],
+                    "f_date": f[0]["date"]
                 })
+            if len(f) > 1:
+                h2 = get_holdings(cik, f[1]["acc"])
+                for cusip, val in h2.items():
+                    prev_records[(cik, cusip)] = val
+        
+        status_box.markdown("📊 **기관 수급 변화량 집계 및 퀀트 팩터 산출 중...**")
+        prog.empty()
+        status_box.empty()
+        
+        tot = {}
+        for r in curr_records:
+            k = (r["cik"], r["cusip"])
+            c = r["cusip"]
+            if k not in prev_records:
+                diff_v = r["val"]
+                diff_s = r["shares"]
+            else:
+                p = prev_records[k]
+                diff_v = max(0, r["val"] - p["val"]) if r["shares"] > p["shares"] else 0
+                diff_s = max(0, r["shares"] - p["shares"]) if r["shares"] > p["shares"] else 0
             
-            res_df = calc_score(pd.DataFrame(data_rows), sector_neutral=sec_neutral)
-            st.session_state["result_df"] = res_df
+            if diff_v > 0 or k not in prev_records:
+                if c not in tot:
+                    tot[c] = {
+                        "name": r["name"],
+                        "funds": set(),
+                        "inflow": 0,
+                        "shares": 0,
+                        "f_date": r["f_date"],
+                        "details": []
+                    }
+                tot[c]["funds"].add(r["fund"])
+                tot[c]["inflow"] += diff_v
+                tot[c]["shares"] += diff_s
+                tot[c]["details"].append({
+                    "fund": r["fund"],
+                    "type": "신규" if k not in prev_records else "확대",
+                    "shares": diff_s,
+                    "val_m": round(diff_v / 1000.0, 1)
+                })
+        
+        ranked = sorted(
+            tot.items(),
+            key=lambda x: (len(x[1]["funds"]), x[1]["inflow"]),
+            reverse=True
+        )[:top_n]
+        
+        data_rows = []
+        for cusip, d in ranked:
+            tk = resolve_ticker_advanced(cusip, d["name"])
+            rel_ret, dist_52w, ad_pass, cur_p = -15.0, -20.0, True, 0.0
+            price_chg, pct_chg = 0.0, 0.0
+
+            if tk != "-":
+                try:
+                    t = yf.Ticker(tk)
+                    hist = t.history(period="6mo")
+                    if not hist.empty and len(hist) > 10:
+                        cur_p = float(hist["Close"].iloc[-1])
+                        dist_52w = ((cur_p - hist["High"].max()) / hist["High"].max()) * 100.0
+                        rel_ret = ((cur_p - hist["Close"].iloc[0]) / hist["Close"].iloc[0]) * 100.0
+                        
+                        target_dt = pd.to_datetime(d["f_date"]).tz_localize(hist.index.tz)
+                        hist_since = hist[hist.index >= target_dt]
+                        if not hist_since.empty:
+                            base_p = float(hist_since["Close"].iloc[0])
+                        else:
+                            base_p = float(hist["Close"].iloc[0])
+                        
+                        price_chg = cur_p - base_p
+                        pct_chg = (price_chg / base_p) * 100.0 if base_p > 0 else 0.0
+                        
+                        clv = (
+                            (hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])
+                        ) / (hist["High"] - hist["Low"] + 1e-9)
+                        ad = (clv * hist["Volume"]).cumsum()
+                        ad_pass = ad.iloc[-1] >= ad.iloc[-10]
+                except Exception:
+                    pass
+            
+            data_rows.append({
+                "CUSIP": cusip,
+                "Ticker": tk,
+                "Name": d["name"],
+                "Sector": "Tech" if tk in ["NVDA", "AAPL", "MSFT", "AVGO", "PLTR"] else "General",
+                "Fund_Count": len(d["funds"]),
+                "Inflow_M": round(d["inflow"] / 1000.0, 1),
+                "Shares_Sum": d["shares"],
+                "Rel_Return": round(rel_ret, 1),
+                "Dist_52W": round(dist_52w, 1),
+                "AD_Pass": ad_pass,
+                "Price_Val": cur_p,
+                "Price_Chg": round(price_chg, 2),
+                "Pct_Chg": round(pct_chg, 2),
+                "details": d["details"]
+            })
+        
+        res_df = calc_score(pd.DataFrame(data_rows), sector_neutral=sec_neutral)
+        st.session_state["result_df"] = res_df
 
 if "result_df" in st.session_state:
     df_show = st.session_state["result_df"].copy()
     if pass_only:
         df_show = df_show[df_show["AD_Pass"] == True]
         
-    st.subheader(f"📋 퀀트 랭킹 & 투자 시그널 (총 {len(df_show)}개 종목)")
+    st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
+    
     table_df = df_show[[
         "Rank", "Ticker", "Name", "SmartScore", "Signal",
-        "M1", "M2", "M3", "Fund_Count", "Inflow_M", "Price"
-    ]]
+        "Price_Val", "Price_Chg", "Pct_Chg",
+        "Fund_Count", "Inflow_M"
+    ]].copy()
+    
     table_df.columns = [
         "순위", "티커", "기업명", "스마트스코어", "투자시그널",
-        "M1", "M2", "M3", "기관수", "유입액($M)", "현재가"
+        "현재가($)", "공시후변동($)", "공시후변동률(%)",
+        "기관수", "유입액($M)"
     ]
-    st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+    def color_return_kr(val):
+        try:
+            v = float(val)
+            if v > 0:
+                return "color: #E03131; font-weight: bold;"
+            elif v < 0:
+                return "color: #1971C2; font-weight: bold;"
+        except Exception:
+            pass
+        return "color: #868E96;"
+
+    styled_df = table_df.style.map(
+        color_return_kr,
+        subset=["공시후변동($)", "공시후변동률(%)"]
+    ).format({
+        "현재가($)": lambda x: f"${x:.2f}" if x > 0 else "-",
+        "공시후변동($)": lambda x: f"{'+' if x > 0 else ''}{x:.2f}" if x != 0 else "0.00",
+        "공시후변동률(%)": lambda x: f"{'+' if x > 0 else ''}{x:.2f}%" if x != 0 else "0.00%"
+    })
+
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
     
     st.divider()
     st.subheader("🔍 종목별 매수 기관 드릴다운 상세")

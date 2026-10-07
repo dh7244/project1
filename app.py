@@ -12,7 +12,7 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="13F SML Radar v1.5",
+    page_title="13F SML Radar v1.6 (Large-Cap Multi-Model)",
     page_icon="📈",
     layout="wide"
 )
@@ -272,13 +272,14 @@ def min_max(s, invert=False):
         return (mx - s) / (mx - mn) * 100.0
     return (s - mn) / (mx - mn) * 100.0
 
-def calc_score(df, sector_neutral=False):
+def calc_score_multi(df, sector_neutral=False, primary_model="SML-2"):
     if df.empty:
         return df
     d = df.copy()
     if sector_neutral and "Sector" in d.columns:
         d["Rel_Return"] = d.groupby("Sector")["Rel_Return"].transform(lambda s: s - s.mean())
 
+    # 기본 팩터 정규화
     d["Factor_Inst_Count"] = min_max(d["Fund_Count"]).round(1)
     d["Factor_Inst_Inflow"] = min_max(d["Inflow_M"]).round(1)
     d["Factor_Inst_Shares"] = min_max(d["Shares_Sum"]).round(1)
@@ -294,7 +295,6 @@ def calc_score(df, sector_neutral=False):
         d["Fund_Count"].rank(pct=True).fillna(0.5) * 50.0
         + d["Inflow_M"].rank(pct=True).fillna(0.5) * 50.0
     )
-    
     f_counts = d["Fund_Count"].fillna(0).to_numpy()
     z_inst = stats.zscore(f_counts) if len(f_counts) > 1 and np.std(f_counts) > 0 else np.zeros(len(d))
 
@@ -306,7 +306,6 @@ def calc_score(df, sector_neutral=False):
         (-d["Rel_Return"]).rank(pct=True).fillna(0.5) * 50.0
         + (-d["Dist_52W"]).rank(pct=True).fillna(0.5) * 50.0
     )
-    
     r_rets = d["Rel_Return"].fillna(0).to_numpy()
     z_lag = -stats.zscore(r_rets) if len(r_rets) > 1 and np.std(r_rets) > 0 else np.zeros(len(d))
 
@@ -314,19 +313,48 @@ def calc_score(df, sector_neutral=False):
     d["M2"] = (0.55 * m2_inst + 0.45 * m2_lag).round(1).fillna(50.0)
     z_comp = 0.55 * np.nan_to_num(z_inst) + 0.45 * np.nan_to_num(z_lag)
     d["M3"] = (stats.norm.cdf(z_comp) * 100.0).round(1)
-    
-    raw_sml = 0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]
-    d["SML_Score"] = raw_sml.round(1).fillna(50.0)
+
+    # 1. 기본 표준 SML (2:4:4)
+    d["SML_Base"] = (0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]).round(1).fillna(50.0)
+
+    # 2. SML-1: M1(절대수급/체급) 가중치 상향 (40:35:25)
+    d["SML_1"] = (0.40 * d["M1"] + 0.35 * d["M2"] + 0.25 * d["M3"]).round(1).fillna(50.0)
+
+    # 3. SML-2: 시가총액 로그 스케일링 팩터(15%) 결합
+    log_mc = np.log(np.maximum(d["MarketCap_B"], 0.1))
+    d["Cap_Score"] = min_max(log_mc).round(1)
+    d["SML_2"] = (0.85 * d["SML_Base"] + 0.15 * d["Cap_Score"]).round(1).fillna(50.0)
+
+    # 4. SML-3: 시총 티어 구간별 보너스 (Mega: +5, Large: +3, Mid: +1)
+    tier_bonus = []
+    tier_labels = []
+    for mc in d["MarketCap_B"]:
+        if mc >= 200.0:
+            tier_bonus.append(5.0)
+            tier_labels.append("메가캡 (+$5.0$)")
+        elif mc >= 50.0:
+            tier_bonus.append(3.0)
+            tier_labels.append("대형주 (+$3.0$)")
+        elif mc >= 10.0:
+            tier_bonus.append(1.0)
+            tier_labels.append("중대형주 (+$1.0$)")
+        else:
+            tier_bonus.append(0.0)
+            tier_labels.append("일반/소형주 (+0)")
+    d["Cap_Tier"] = tier_labels
+    d["SML_3"] = np.clip(d["SML_Base"] + np.array(tier_bonus), 0.0, 100.0).round(1)
+
+    model_col_map = {"SML-1": "SML_1", "SML-2": "SML_2", "SML-3": "SML_3", "기본(Base)": "SML_Base"}
+    active_col = model_col_map.get(primary_model, "SML_2")
+    d["SML_Score"] = d[active_col]
 
     sigs = []
     for _, r in d.iterrows():
         p_val = r["Price_Val"]
         tk = r["Ticker"]
-        
         if p_val <= 0 or tk == "-":
             sigs.append("⚪ NO_DATA")
             continue
-            
         sc = r["SML_Score"]
         ad = r["AD_Pass"]
         if sc >= 75.0 and ad:
@@ -338,35 +366,24 @@ def calc_score(df, sector_neutral=False):
         else:
             sigs.append("⚪ NEUTRAL")
     d["Signal"] = sigs
-    
+
     d["Rank"] = d["SML_Score"].rank(ascending=False, method="min").fillna(len(d)).astype(int)
     return d.sort_values(by="Rank").reset_index(drop=True)
 
 # --- UI 레이아웃 ---
-st.title("🎯 SEC 13F SML 레이더 v1.5")
-st.caption("스마트머니 래그(SML) 분석 | 3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 수치화 검증 | 공시 일정 모니터링")
+st.title("🎯 SEC 13F SML 레이더 v1.6")
+st.caption("스마트머니 래그(SML) 분석 | 대형주 3대 우대 모델(SML-1·2·3) 탑재 | 마이크로스트럭처(A/D Line) 수치화 검증")
 
-with st.expander("📖 SML 점수 및 퀀트 팩터(M1·M2·M3) 상세 가이드 (필독)", expanded=False):
+with st.expander("📖 대형주 우대 모델(SML-1·2·3) 및 SML 팩터 상세 가이드", expanded=False):
     st.markdown(
         """
-        ### 1. SML 점수(Smart Money Lag Score)란?
-        * **개념**: **"스마트머니(월가 대형 기관)의 집중 매수가 유입되었음에도, 주가는 아직 오르지 않고 뒤처진(Lag) 저평가 종목"**을 발굴하는 퀀트 앙상블 스코어입니다 (100점 만점).
-        * **핵심 가설**: 거대 자본을 굴리는 전문 기관들은 장기간에 걸쳐 분할 매집하며, 공시 이후 시장의 관심이 쏠리면서 뒤늦게 주가가 제자리를 찾아가는 '시차 반등(Lag Reversal)' 현상을 노립니다.
-        * **종합 공식**: 
-          $$\\text{SML 점수} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$$
-        * **내부 평가 비중**: 모든 모델은 **기관 수급 강도(55%)** + **주가 저평가/소외도(45%)**를 결합하여 산출됩니다.
-
-        ---
-        ### 2. 세부 팩터 모델(M1, M2, M3)의 작동 원리
-        * **M1 (선형 스케일 / 20%)**: 수천억~수조 원 규모의 압도적인 금액/주식이 유입된 **초대형 매집주**가 높은 점수를 받습니다.
-        * **M2 (백분위 순위 / 40%)**: 절대 금액 차이를 배제하고 상대 순위(상위 %)로 변환하여 **극단적 이상치 왜곡을 완화**합니다.
-        * **M3 (Z-Score 정규화 / 40%)**: 평균 대비 통계적으로 이례적인 **자금 집중 징후(Spike)**를 정밀 포착합니다.
-
-        ---
-        ### 3. 마이크로스트럭처(A/D Line 매집강도)와 실전 투자 시그널
-        13F 공시는 분기 마감 후 최대 45일 뒤에 제출되므로 **'공시 시점에는 이미 기관이 차익실현 중일 수 있는 지연 리스크'**를 방지하기 위해 최근 10거래일 **A/D Line(축적/분산선)**의 자금 유출입을 기술적으로 교차 검증합니다.
-        * **A/D 10일 변화율**: 최근 2주간 누적 자금 유입선이 상승했는지를 백분율(%)로 추적.
-        * **평균 CLV(장중 매집 비율)**: -1.0(최저가 마감/매도 투하) ~ +1.0(최고가 마감/강한 매집) 사이에서 장중 매수세 우위를 측정.
+        ### 👑 대형주 우대 모델 3종 비교
+        * **SML-1 (M1 가중치 상향)**: $0.40 \\times M_1 + 0.35 \\times M_2 + 0.25 \\times M_3$
+          * 절대 자금 유입액(\$M)과 주식 수를 평가하는 $M_1$ 비중을 20%에서 40%로 높여 메가캡 수급주를 우대합니다.
+        * **SML-2 (시총 로그 팩터 결합)**: $0.85 \\times \\text{SML}_{\\text{Base}} + 0.15 \\times \\text{MinMax}(\\ln(\\text{MarketCap}))$
+          * 실제 시가총액(\$B)을 로그 정규화한 독립 팩터를 15% 비중으로 직접 결합하는 가장 정교한 퀀트 방식입니다.
+        * **SML-3 (시총 티어 보너스)**: $\\text{SML}_{\\text{Base}} + \\text{Tier Bonus}$
+          * 메가캡(\$2,000억 이상) **+5점**, 대형주(\$500억 이상) **+3점**, 중대형주(\$100억 이상) **+1점** 가산.
         """
     )
 
@@ -399,13 +416,21 @@ with col3:
 with col4:
     valid_price_only = st.checkbox("시세 조회 성공 종목만 보기", value=True)
 
+model_choice = st.radio(
+    "🏆 랭킹 정렬 및 시그널 기준 모델 선택:",
+    options=["SML-2 (시총 로그 팩터 결합)", "SML-1 (M1 가중치 상향)", "SML-3 (시총 티어 보너스)", "기본(Base, 2:4:4 표준)"],
+    index=0,
+    horizontal=True
+)
+short_model_name = "SML-2" if "SML-2" in model_choice else ("SML-1" if "SML-1" in model_choice else ("SML-3" if "SML-3" in model_choice else "기본(Base)"))
+
 btn_col1, btn_col2 = st.columns([3, 1])
 with btn_col1:
     run_btn = st.button("🚀 13F 전수 수급 집계 & 퀀트 스코어링 실행", type="primary")
 with btn_col2:
     if st.button("🔄 캐시 초기화 (새로고침)"):
         st.cache_data.clear()
-        st.session_state.pop("result_df", None)
+        st.session_state.pop("raw_data_rows", None)
         st.rerun()
 
 funds_to_analyze = {
@@ -494,12 +519,13 @@ if run_btn:
         
         for s_idx, (cusip, d) in enumerate(ranked):
             tk = resolve_ticker_advanced(cusip, d["name"])
-            status_box.markdown(f"📈 **[2단계: 시세/팩터 검증 {s_idx+1}/{tot_stocks}]** `{d['name'][:25]}` (티커: `{tk}`) 데이터 분석 중...")
+            status_box.markdown(f"📈 **[2단계: 시세/시총/팩터 검증 {s_idx+1}/{tot_stocks}]** `{d['name'][:25]}` (티커: `{tk}`) 데이터 수집 중...")
             prog.progress(55 + int(((s_idx + 1) / max(tot_stocks, 1)) * 45))
             
             rel_ret, dist_52w, ad_pass, cur_p, base_p = 0.0, 0.0, False, 0.0, 0.0
             price_chg, pct_chg = 0.0, 0.0
             ad_chg_pct, avg_clv = 0.0, 0.0
+            market_cap_b = 0.0
 
             if tk != "-":
                 try:
@@ -531,6 +557,13 @@ if run_btn:
                         denom_ad = abs(ad_prev) if abs(ad_prev) > 0 else 1.0
                         ad_chg_pct = ((ad_cur - ad_prev) / denom_ad) * 100.0
                         avg_clv = float(clv_series.iloc[-10:].mean())
+
+                        try:
+                            fast_info = getattr(t, "fast_info", {})
+                            mc_raw = fast_info.get("marketCap", 0) or t.info.get("marketCap", 0)
+                            market_cap_b = round(float(mc_raw) / 1e9, 2)
+                        except Exception:
+                            market_cap_b = 0.0
                 except Exception:
                     pass
             
@@ -547,6 +580,7 @@ if run_btn:
                 "AD_Pass": ad_pass,
                 "AD_Chg_Pct": round(ad_chg_pct, 1),
                 "Avg_CLV": round(avg_clv, 2),
+                "MarketCap_B": market_cap_b,
                 "Base_Price": round(base_p, 2),
                 "Price_Val": round(cur_p, 2),
                 "Price_Chg": round(price_chg, 2),
@@ -555,20 +589,22 @@ if run_btn:
                 "details": d["details"]
             })
         
-        status_box.markdown("✨ **SML 점수 앙상블 및 랭킹 정렬 완료!**")
+        status_box.markdown("✨ **SML-1·2·3 다중 스코어링 및 랭킹 정렬 완료!**")
         prog.progress(100)
         time.sleep(0.5)
         
         prog.empty()
         status_box.empty()
-        
-        res_df = calc_score(pd.DataFrame(data_rows), sector_neutral=sec_neutral)
-        st.session_state["result_df"] = res_df
-        st.session_state["selected_ticker"] = res_df["Ticker"].iloc[0] if not res_df.empty else None
+        st.session_state["raw_data_rows"] = data_rows
 
-if "result_df" in st.session_state and not st.session_state["result_df"].empty:
-    df_show = st.session_state["result_df"].copy()
-    
+if "raw_data_rows" in st.session_state and st.session_state["raw_data_rows"]:
+    res_df = calc_score_multi(
+        pd.DataFrame(st.session_state["raw_data_rows"]),
+        sector_neutral=sec_neutral,
+        primary_model=short_model_name
+    )
+    df_show = res_df.copy()
+
     if valid_price_only:
         df_show = df_show[df_show["Price_Val"] > 0].reset_index(drop=True)
 
@@ -585,7 +621,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         st.metric("⏳ 다음 13F 공시 마감일", next_f_date)
     with col_d3:
         d_sign = f"D-{d_days}일" if d_days > 0 else f"D+{abs(d_days)}일"
-        st.metric("⏱️ 다음 공시까지 남은 기간", d_sign, "공시 45일 주기 모니터링")
+        st.metric("⏱️ 다음 공시까지 남은 기간", d_sign, f"선택 모델: {short_model_name}")
 
     def fmt_price_chg_symbol(v):
         if pd.isna(v) or v == 0.0:
@@ -601,13 +637,11 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         elif v > 0:
             return f"🔴 +{v:.2f}%"
         else:
-            return f"🔵 -{abs(v):.2f}%"
+            return f"🔵 -{abs(v):.2f}"
 
-    # ==========================================
-    # ⭐️ 탑픽 5 (Top Picks 5) 모듈 (A/D변화 포함)
-    # ==========================================
+    # 탑픽 5선 모듈
     st.divider()
-    st.subheader("⭐ 퀀트 탑픽 5선 (Quant Top Picks)")
+    st.subheader(f"⭐ 퀀트 탑픽 5선 (기준 모델: {short_model_name})")
 
     tab_pure, tab_theme = st.tabs(["🔥 SML 순수 득점 Top 5", "⚖️ 테마 분산 5대 엄선주"])
 
@@ -617,9 +651,9 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         pure_top5 = pure_candidates.head(5) if len(pure_candidates) >= 5 else df_show.head(5)
 
         if not pure_top5.empty:
-            p_table = pure_top5[["Ticker", "Name", "SML_Score", "Price_Val", "Pct_Chg", "AD_Chg_Pct", "Signal"]].copy()
+            p_table = pure_top5[["Ticker", "Name", "SML_Score", "SML_1", "SML_2", "SML_3", "MarketCap_B", "Price_Val", "Pct_Chg", "AD_Chg_Pct", "Signal"]].copy()
             p_table.insert(0, "선정", [f"Top {i+1}" for i in range(len(p_table))])
-            p_table.columns = ["선정", "티커", "기업명", "SML점수", "현재가($)", "공시후변동률", "A/D변화", "시그널"]
+            p_table.columns = ["선정", "티커", "기업명", f"{short_model_name}(메인)", "SML-1", "SML-2", "SML-3", "시총($B)", "현재가($)", "공시후변동률", "A/D변화", "시그널"]
             p_table["공시후변동률"] = p_table["공시후변동률"].apply(fmt_pct_chg_symbol)
 
             p_event = st.dataframe(
@@ -630,7 +664,11 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 selection_mode="single-row",
                 key="pure_top5_grid",
                 column_config={
-                    "SML점수": st.column_config.NumberColumn(format="%.1f 점"),
+                    f"{short_model_name}(메인)": st.column_config.NumberColumn(format="%.1f 점"),
+                    "SML-1": st.column_config.NumberColumn(format="%.1f"),
+                    "SML-2": st.column_config.NumberColumn(format="%.1f"),
+                    "SML-3": st.column_config.NumberColumn(format="%.1f"),
+                    "시총($B)": st.column_config.NumberColumn(format="$%.1f B"),
                     "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
                     "A/D변화": st.column_config.NumberColumn(format="%+.1f%%"),
                 }
@@ -646,58 +684,53 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         theme_picks = []
         selected_tickers = set()
 
-        # Slot 1: 고래 매집
         s1 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="Inflow_M", ascending=False)
         if not s1.empty:
             t1 = s1.iloc[0]
             theme_picks.append({
                 "전략 슬롯": "🐋 고래 매집", "티커": t1["Ticker"], "기업명": t1["Name"],
-                "SML점수": t1["SML_Score"], "현재가($)": t1["Price_Val"], "공시후변동률": t1["Pct_Chg"],
-                "A/D변화": t1["AD_Chg_Pct"], "선정 이유": "순유입액 1위"
+                "SML(메인)": t1["SML_Score"], "SML-2": t1["SML_2"], "시총($B)": t1["MarketCap_B"],
+                "현재가($)": t1["Price_Val"], "공시후변동률": t1["Pct_Chg"], "A/D변화": t1["AD_Chg_Pct"], "선정 이유": "순유입액 1위"
             })
             selected_tickers.add(t1["Ticker"])
 
-        # Slot 2: 바닥 소외
         s2 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="Dist_52W", ascending=True)
         if not s2.empty:
             t2 = s2.iloc[0]
             theme_picks.append({
                 "전략 슬롯": "📉 바닥 소외", "티커": t2["Ticker"], "기업명": t2["Name"],
-                "SML점수": t2["SML_Score"], "현재가($)": t2["Price_Val"], "공시후변동률": t2["Pct_Chg"],
-                "A/D변화": t2["AD_Chg_Pct"], "선정 이유": f"52주 낙폭 {t2['Dist_52W']:.1f}%"
+                "SML(메인)": t2["SML_Score"], "SML-2": t2["SML_2"], "시총($B)": t2["MarketCap_B"],
+                "현재가($)": t2["Price_Val"], "공시후변동률": t2["Pct_Chg"], "A/D변화": t2["AD_Chg_Pct"], "선정 이유": f"52주 낙폭 {t2['Dist_52W']:.1f}%"
             })
             selected_tickers.add(t2["Ticker"])
 
-        # Slot 3: 수급 급증
         s3 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="M3", ascending=False)
         if not s3.empty:
             t3 = s3.iloc[0]
             theme_picks.append({
                 "전략 슬롯": "⚡ 수급 급증", "티커": t3["Ticker"], "기업명": t3["Name"],
-                "SML점수": t3["SML_Score"], "현재가($)": t3["Price_Val"], "공시후변동률": t3["Pct_Chg"],
-                "A/D변화": t3["AD_Chg_Pct"], "선정 이유": f"M3 Z-Score {t3['M3']:.1f}점"
+                "SML(메인)": t3["SML_Score"], "SML-2": t3["SML_2"], "시총($B)": t3["MarketCap_B"],
+                "현재가($)": t3["Price_Val"], "공시후변동률": t3["Pct_Chg"], "A/D변화": t3["AD_Chg_Pct"], "선정 이유": f"M3 Z-Score {t3['M3']:.1f}점"
             })
             selected_tickers.add(t3["Ticker"])
 
-        # Slot 4: 차트 매집
         s4 = valid_pool[(~valid_pool["Ticker"].isin(selected_tickers)) & (valid_pool["AD_Pass"] == True)].sort_values(by="AD_Chg_Pct", ascending=False)
         if not s4.empty:
             t4 = s4.iloc[0]
             theme_picks.append({
                 "전략 슬롯": "🌊 차트 매집", "티커": t4["Ticker"], "기업명": t4["Name"],
-                "SML점수": t4["SML_Score"], "현재가($)": t4["Price_Val"], "공시후변동률": t4["Pct_Chg"],
-                "A/D변화": t4["AD_Chg_Pct"], "선정 이유": f"A/D {t4['AD_Chg_Pct']:+.1f}%"
+                "SML(메인)": t4["SML_Score"], "SML-2": t4["SML_2"], "시총($B)": t4["MarketCap_B"],
+                "현재가($)": t4["Price_Val"], "공시후변동률": t4["Pct_Chg"], "A/D변화": t4["AD_Chg_Pct"], "선정 이유": f"A/D {t4['AD_Chg_Pct']:+.1f}%"
             })
             selected_tickers.add(t4["Ticker"])
 
-        # Slot 5: 밸류 앙상블
         s5 = valid_pool[~valid_pool["Ticker"].isin(selected_tickers)].sort_values(by="M2", ascending=False)
         if not s5.empty:
             t5 = s5.iloc[0]
             theme_picks.append({
                 "전략 슬롯": "💎 밸류 앙상블", "티커": t5["Ticker"], "기업명": t5["Name"],
-                "SML점수": t5["SML_Score"], "현재가($)": t5["Price_Val"], "공시후변동률": t5["Pct_Chg"],
-                "A/D변화": t5["AD_Chg_Pct"], "선정 이유": f"M2 순위 {t5['M2']:.1f}점"
+                "SML(메인)": t5["SML_Score"], "SML-2": t5["SML_2"], "시총($B)": t5["MarketCap_B"],
+                "현재가($)": t5["Price_Val"], "공시후변동률": t5["Pct_Chg"], "A/D변화": t5["AD_Chg_Pct"], "선정 이유": f"M2 순위 {t5['M2']:.1f}점"
             })
             selected_tickers.add(t5["Ticker"])
 
@@ -713,7 +746,9 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 selection_mode="single-row",
                 key="theme_top5_grid",
                 column_config={
-                    "SML점수": st.column_config.NumberColumn(format="%.1f 점"),
+                    "SML(메인)": st.column_config.NumberColumn(format="%.1f 점"),
+                    "SML-2": st.column_config.NumberColumn(format="%.1f"),
+                    "시총($B)": st.column_config.NumberColumn(format="$%.1f B"),
                     "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
                     "A/D변화": st.column_config.NumberColumn(format="%+.1f%%"),
                 }
@@ -725,18 +760,18 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
 
     st.divider()
 
-    st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
-    st.caption("💡 **표에서 확인하고 싶은 기업의 행을 터치/클릭**하면 바로 아래에 상세 팩터 분석 및 매수 기관 정보가 연동됩니다.")
+    st.subheader(f"📋 전수 퀀트 랭킹 (메인 기준: {short_model_name} / 총 {len(df_show)}개 종목)")
+    st.caption("💡 각 컬럼 헤더를 클릭하여 SML-1, SML-2, SML-3 순서로 즉시 정렬을 비교해 볼 수 있습니다.")
 
     table_df = df_show[[
-        "Rank", "Ticker", "Name", "SML_Score", "M1", "M2", "M3",
-        "Signal", "Base_Price", "Price_Val", "Price_Chg", "Pct_Chg",
+        "Rank", "Ticker", "Name", "SML_Score", "SML_1", "SML_2", "SML_3",
+        "MarketCap_B", "Signal", "Base_Price", "Price_Val", "Price_Chg", "Pct_Chg",
         "Fund_Count", "Inflow_M"
     ]].copy()
     
     table_df.columns = [
-        "순위", "티커", "기업명", "SML 점수", "M1", "M2", "M3",
-        "투자시그널", "공시일주가($)", "현재가($)", "공시후변동($)", "공시후변동률(%)",
+        "순위", "티커", "기업명", f"{short_model_name}(메인)", "SML-1", "SML-2", "SML-3",
+        "시총($B)", "투자시그널", "공시일주가($)", "현재가($)", "공시후변동($)", "공시후변동률(%)",
         "기관수", "유입액($M)"
     ]
 
@@ -751,10 +786,11 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         selection_mode="single-row",
         column_config={
             "순위": st.column_config.NumberColumn(format="%d"),
-            "SML 점수": st.column_config.NumberColumn(format="%.1f 점"),
-            "M1": st.column_config.NumberColumn(format="%.1f"),
-            "M2": st.column_config.NumberColumn(format="%.1f"),
-            "M3": st.column_config.NumberColumn(format="%.1f"),
+            f"{short_model_name}(메인)": st.column_config.NumberColumn(format="%.1f 점"),
+            "SML-1": st.column_config.NumberColumn(format="%.1f"),
+            "SML-2": st.column_config.NumberColumn(format="%.1f"),
+            "SML-3": st.column_config.NumberColumn(format="%.1f"),
+            "시총($B)": st.column_config.NumberColumn(format="$%.1f B"),
             "공시일주가($)": st.column_config.NumberColumn(format="$%.2f"),
             "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
             "공시후변동($)": st.column_config.TextColumn(),
@@ -778,39 +814,41 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
 
         st.divider()
         
-        # --- 종목 상세 분석 및 팩터 비중 분해 영역 ---
-        st.subheader(f"🔍 [{current_tk}] {sel_row['Name']} 심층 팩터 분석 & 매수 기관")
+        # --- 종목 상세 분석 및 3대 SML 모델 비교 영역 ---
+        st.subheader(f"🔍 [{current_tk}] {sel_row['Name']} 심층 팩터 & 대형주 모델 비교")
         
-        col_info1, col_info2, col_info3, col_info4 = st.columns(4)
-        with col_info1:
-            st.metric("종합 SML 점수", f"{sel_row['SML_Score']:.1f} 점", sel_row['Signal'])
-        with col_info2:
-            st.metric("M1 (선형 스케일)", f"{sel_row['M1']:.1f} 점", "앙상블 비중 20%")
-        with col_info3:
-            st.metric("M2 (백분위 순위)", f"{sel_row['M2']:.1f} 점", "앙상블 비중 40%")
-        with col_info4:
-            st.metric("M3 (Z-Score 정규화)", f"{sel_row['M3']:.1f} 점", "앙상블 비중 40%")
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        with col_m1:
+            st.metric("SML-1 (M1 상향 40:35:25)", f"{sel_row['SML_1']:.1f} 점", "수급/체급 가중")
+        with col_m2:
+            st.metric("SML-2 (시총 로그 15% 결합)", f"{sel_row['SML_2']:.1f} 점", f"Cap점수: {sel_row['Cap_Score']:.1f}점")
+        with col_m3:
+            st.metric("SML-3 (시총 티어 보너스)", f"{sel_row['SML_3']:.1f} 점", sel_row["Cap_Tier"])
+        with col_m4:
+            st.metric("시가총액", f"${sel_row['MarketCap_B']:,.1f} B", sel_row['Signal'])
 
-        with st.expander("📐 SML 점수 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
-            st.markdown(
-                """
-                **SML 점수 앙상블 공식**:  
-                $$\\text{SML 점수} = 0.20 \\times M_1 + 0.40 \\times M_2 + 0.40 \\times M_3$$
-                각 서브 모델($M_1, M_2, M_3$)은 **스마트머니 수급 점수(55%)**와 **주가 래깅/소외 점수(45%)**의 결합으로 산출됩니다.
-                """
-            )
+        col_info1, col_info2, col_info3 = st.columns(3)
+        with col_info1:
+            st.metric("M1 (선형 스케일)", f"{sel_row['M1']:.1f} 점")
+        with col_info2:
+            st.metric("M2 (백분위 순위)", f"{sel_row['M2']:.1f} 점")
+        with col_info3:
+            st.metric("M3 (Z-Score 정규화)", f"{sel_row['M3']:.1f} 점")
+
+        with st.expander("📐 세부 지표 및 기여도 (Factor Breakdown)", expanded=True):
             b_col1, b_col2 = st.columns(2)
             with b_col1:
-                st.markdown("##### 🏛️ 스마트머니 수급 지표 (전체 비중 55%)")
-                st.write(f"- **매수 기관 수 (비중 35%)**: {sel_row['Fund_Count']}개 사")
-                st.write(f"- **순유입 대금 (비중 35%)**: ${sel_row['Inflow_M']:,.1f} M")
-                st.write(f"- **신규/추가 주식수 (비중 30%)**: {sel_row['Shares_Sum']:,} 주")
+                st.markdown("##### 🏛️ 스마트머니 수급 지표 (비중 55%)")
+                st.write(f"- **매수 기관 수**: {sel_row['Fund_Count']}개 사")
+                st.write(f"- **순유입 대금**: ${sel_row['Inflow_M']:,.1f} M")
+                st.write(f"- **신규/추가 주식수**: {sel_row['Shares_Sum']:,} 주")
+                st.write(f"- **기업 시가총액**: ${sel_row['MarketCap_B']:,.1f} Billion")
                 
             with b_col2:
-                st.markdown("##### 📉 가격 소외 및 매집강도(A/D) 지표 (전체 비중 45%)")
+                st.markdown("##### 📉 가격 소외 및 매집강도(A/D) 지표 (비중 45%)")
                 if sel_row["Price_Val"] > 0:
-                    st.write(f"- **기간 상대 수익률 (비중 60%)**: {sel_row['Rel_Return']:+.1f}%")
-                    st.write(f"- **52주 최고가 괴리율 (비중 40%)**: {sel_row['Dist_52W']:.1f}%")
+                    st.write(f"- **기간 상대 수익률**: {sel_row['Rel_Return']:+.1f}%")
+                    st.write(f"- **52주 최고가 괴리율**: {sel_row['Dist_52W']:.1f}%")
                     
                     chg_sign = "🔴 +" if sel_row["Price_Chg"] > 0 else ("🔵 -" if sel_row["Price_Chg"] < 0 else "")
                     chg_abs = abs(sel_row["Price_Chg"])
@@ -823,11 +861,10 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                     pass_str = "✅ PASS (매집 유입 확인)" if sel_row["AD_Pass"] else "❌ FAIL (분산/차익매도 우려)"
                     st.markdown(f"- **A/D Line 매집강도 판정**: **{pass_str}**")
                     st.write(f"  * **최근 10일 A/D 추세 변화율**: `{sel_row['AD_Chg_Pct']:+.1f}%` *(양수일수록 매집 강함)*")
-                    st.write(f"  * **평균 장중 매집 강도 (CLV 점수)**: `{sel_row['Avg_CLV']:+.2f}` *(범위: -1.0 ~ +1.0 / +에 가까울수록 고가 마감)*")
+                    st.write(f"  * **평균 장중 매집 강도 (CLV 점수)**: `{sel_row['Avg_CLV']:+.2f}` *(범위: -1.0 ~ +1.0)*")
                 else:
-                    st.warning("⚠️ 실시간 시세 미조회 종목으로 가격 지표 및 추천 시그널이 산출되지 않았습니다.")
+                    st.warning("⚠️ 실시간 시세 미조회 종목으로 가격 지표가 산출되지 않았습니다.")
 
-        # 매수 기관 목록
         st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록")
         dt_df = pd.DataFrame(sel_row["details"])
         dt_df = dt_df.sort_values(by="val_m", ascending=False).reset_index(drop=True)
@@ -842,5 +879,3 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 "매수금액($M)": st.column_config.NumberColumn(format="$%.1f M"),
             }
         )
-    else:
-        st.info("선택한 필터 조건에 부합하는 종목이 없습니다.")

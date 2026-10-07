@@ -70,4 +70,390 @@ TICKER_MAP = {
     "74340W103": "QCOM",
     "09247X101": "BLK",
     "025816109": "AXP",
-    "06
+    "060505104": "BAC",
+    "191216100": "KO",
+    "166764100": "CVX"
+}
+
+def clean_name(name):
+    name = re.sub(
+        r'\b(INC|CORP|COMPANY|CO|LTD|HOLDINGS|HLDG|LLC|PLC|DE|NEW|CLASS [A-Z]|CL [A-Z]|COM)\b',
+        '',
+        name,
+        flags=re.IGNORECASE
+    )
+    name = re.sub(r'[^a-zA-Z0-9 ]', ' ', name)
+    return ' '.join(name.split())
+
+def resolve_ticker(cusip, name):
+    if cusip in TICKER_MAP:
+        return TICKER_MAP[cusip]
+    cl = clean_name(name).split()
+    if cl and 1 <= len(cl[0]) <= 5 and cl[0].isalpha():
+        return cl[0].upper()
+    return "-"
+
+@st.cache_data(ttl=86400)
+def search_sec_company(keyword):
+    url = "https://www.sec.gov/files/company_tickers.json"
+    try:
+        res = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=10
+        )
+        if res.status_code == 200:
+            data = res.json()
+            kw = keyword.lower().strip()
+            results = {}
+            for item in data.values():
+                title = item.get("title", "")
+                cik = str(item.get("cik_str", "")).zfill(10)
+                ticker = item.get("ticker", "")
+                if kw in title.lower() or kw in cik or kw == ticker.lower():
+                    results[f"{title} ({ticker})"] = cik
+                    if len(results) >= 10:
+                        break
+            return results
+    except Exception:
+        pass
+    return {}
+
+def get_filings(cik):
+    time.sleep(0.12)
+    url = f"https://data.sec.gov/submissions/CIK{str(cik).zfill(10)}.json"
+    try:
+        res = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=10
+        )
+        if res.status_code != 200:
+            return []
+        filings = res.json()["filings"]["recent"]
+        out = []
+        for i in range(len(filings["accessionNumber"])):
+            if filings["form"][i] in ["13F-HR", "13F-HR/A"]:
+                out.append({
+                    "acc": filings["accessionNumber"][i],
+                    "date": filings["filingDate"][i]
+                })
+                if len(out) == 2:
+                    break
+        return out
+    except Exception:
+        return []
+
+def get_holdings(cik, acc):
+    time.sleep(0.12)
+    acc_clean = acc.replace("-", "")
+    cik_clean = str(int(cik))
+    url = f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc_clean}/"
+    try:
+        res = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=10
+        )
+        if res.status_code != 200:
+            return {}
+        xmls = re.findall(r'href="([^"]+\.xml)"', res.text, re.IGNORECASE)
+        target = None
+        for f in xmls:
+            fn = f.split("/")[-1].lower()
+            if "infotable" in fn or "13f" in fn:
+                target = f.split("/")[-1]
+                break
+        if not target and xmls:
+            target = xmls[0].split("/")[-1]
+        if not target:
+            return {}
+        
+        xml_res = requests.get(
+            f"{url}{target}",
+            headers=HEADERS,
+            timeout=10
+        )
+        xml_clean = re.sub(r'\sxmlns="[^"]+"', '', xml_res.text, count=1)
+        root = ET.fromstring(xml_clean)
+        
+        h = {}
+        for t in root.findall(".//infoTable"):
+            cusip = t.findtext("cusip", "").strip()
+            nm = t.findtext("nameOfIssuer", "UNKNOWN").strip()
+            v_str = t.findtext("value", "0").replace(",", "").strip()
+            try:
+                v = int(float(v_str))
+            except:
+                v = 0
+            s_node = t.find(".//sshPrnamt")
+            shares = int(float(s_node.text.replace(",", "").strip())) if (s_node is not None and s_node.text) else 0
+            if cusip:
+                if cusip in h:
+                    h[cusip]["val"] += v
+                    h[cusip]["shares"] += shares
+                else:
+                    h[cusip] = {
+                        "name": nm,
+                        "cusip": cusip,
+                        "val": v,
+                        "shares": shares
+                    }
+        return h
+    except Exception:
+        return {}
+
+def min_max(s, invert=False):
+    mn, mx = s.min(), s.max()
+    if mn == mx:
+        return pd.Series(50.0, index=s.index)
+    if invert:
+        return (mx - s) / (mx - mn) * 100.0
+    return (s - mn) / (mx - mn) * 100.0
+
+def calc_score(df, sector_neutral=False):
+    d = df.copy()
+    if sector_neutral and "Sector" in d.columns:
+        d["Rel_Return"] = d.groupby("Sector")["Rel_Return"].transform(lambda s: s - s.mean())
+
+    m1_inst = (
+        0.35 * min_max(d["Fund_Count"])
+        + 0.35 * min_max(d["Inflow_M"])
+        + 0.30 * min_max(d["Shares_Sum"])
+    )
+    m2_inst = (
+        d["Fund_Count"].rank(pct=True) * 50.0
+        + d["Inflow_M"].rank(pct=True) * 50.0
+    )
+    z_inst = stats.zscore(d["Fund_Count"].fillna(0))
+
+    m1_lag = (
+        0.60 * min_max(d["Rel_Return"], invert=True)
+        + 0.40 * min_max(d["Dist_52W"], invert=True)
+    )
+    m2_lag = (
+        (-d["Rel_Return"]).rank(pct=True) * 50.0
+        + (-d["Dist_52W"]).rank(pct=True) * 50.0
+    )
+    z_lag = -stats.zscore(d["Rel_Return"].fillna(0))
+
+    d["M1"] = (0.55 * m1_inst + 0.45 * m1_lag).round(1)
+    d["M2"] = (0.55 * m2_inst + 0.45 * m2_lag).round(1)
+    z_comp = 0.55 * z_inst + 0.45 * z_lag
+    d["M3"] = (stats.norm.cdf(z_comp) * 100.0).round(1)
+    d["SmartScore"] = (0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]).round(1)
+
+    sigs = []
+    for _, r in d.iterrows():
+        sc = r["SmartScore"]
+        ad = r["AD_Pass"]
+        if sc >= 75.0 and ad:
+            sigs.append("🟢 STRONG_BUY")
+        elif sc >= 60.0 and ad:
+            sigs.append("🔵 ACCUMULATE")
+        elif sc >= 60.0 and not ad:
+            sigs.append("🟡 WATCH_LAG")
+        else:
+            sigs.append("⚪ NEUTRAL")
+    d["Signal"] = sigs
+    d["Rank"] = d["SmartScore"].rank(ascending=False, method="min").astype(int)
+    return d.sort_values(by="Rank").reset_index(drop=True)
+
+# --- UI 레이아웃 ---
+st.title("🎯 SEC 13F 스마트스코어 & 시그널 v1.5")
+st.caption("3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 검증 | 섹터 중립화")
+
+if "custom_funds" not in st.session_state:
+    st.session_state["custom_funds"] = dict(DEFAULT_FUNDS)
+
+with st.expander("🏛️ 분석 대상 기관 관리 (추가 / 삭제 / 프리셋 선택)", expanded=False):
+    st.markdown("#### 1. 새로운 기관 직접 추가")
+    add_col1, add_col2 = st.columns([2, 1])
+    with add_col1:
+        search_query = st.text_input(
+            "기관명 영문 검색어 또는 CIK 10자리 입력",
+            placeholder="예: Pershing, Softbank, 0001336528"
+        )
+    with add_col2:
+        st.write(" ")
+        st.write(" ")
+        if st.button("🔍 SEC 조회"):
+            if search_query:
+                if search_query.isdigit():
+                    cik_val = search_query.zfill(10)
+                    st.session_state["custom_funds"][f"직접등록 (CIK {search_query})"] = cik_val
+                    st.success(f"CIK {search_query} 등록 완료!")
+                else:
+                    found = search_sec_company(search_query)
+                    if found:
+                        st.session_state["found_cache"] = found
+                    else:
+                        st.warning("검색 결과가 없습니다. 철자나 CIK 번호를 확인하세요.")
+
+    if "found_cache" in st.session_state and st.session_state["found_cache"]:
+        selected_found = st.selectbox(
+            "검색된 기관 목록에서 선택하여 추가:",
+            list(st.session_state["found_cache"].keys())
+        )
+        if st.button("➕ 선택한 기관 분석 목록에 추가"):
+            st.session_state["custom_funds"][selected_found] = st.session_state["found_cache"][selected_found]
+            st.success(f"'{selected_found}' 추가되었습니다!")
+
+    st.markdown("#### 2. 이번 집계에 포함할 기관 선택")
+    selected_fund_names = st.multiselect(
+        "분석할 기관들을 선택하세요 (기본: 전체 선택)",
+        options=list(st.session_state["custom_funds"].keys()),
+        default=list(st.session_state["custom_funds"].keys())
+    )
+
+st.divider()
+
+col1, col2, col3 = st.columns([1, 1, 1])
+with col1:
+    top_n = st.slider("최종 출력 종목 수 (상위 N개)", min_value=20, max_value=200, value=50, step=10)
+with col2:
+    sec_neutral = st.checkbox("섹터 중립화(Sector Neutral) 적용", value=False)
+with col3:
+    pass_only = st.checkbox("A/D Line 통과(PASS) 종목만 표시", value=False)
+
+if st.button("🚀 13F 전수 수급 집계 & 퀀트 스코어링 실행", type="primary"):
+    funds_to_analyze = {
+        k: st.session_state["custom_funds"][k]
+        for k in selected_fund_names
+        if k in st.session_state["custom_funds"]
+    }
+    
+    if not funds_to_analyze:
+        st.error("최소 1개 이상의 기관을 선택해야 합니다.")
+    else:
+        with st.spinner(f"선택된 {len(funds_to_analyze)}개 기관의 최신 13F 공시 및 시세 데이터 수집 중..."):
+            curr_records = []
+            prev_records = {}
+            
+            prog = st.progress(0.0)
+            fund_items = list(funds_to_analyze.items())
+            
+            for idx, (name, cik) in enumerate(fund_items):
+                prog.progress((idx + 1) / len(fund_items))
+                f = get_filings(cik)
+                if not f:
+                    continue
+                h1 = get_holdings(cik, f[0]["acc"])
+                for cusip, val in h1.items():
+                    curr_records.append({
+                        "cik": cik,
+                        "fund": name,
+                        "cusip": cusip,
+                        "name": val["name"],
+                        "val": val["val"],
+                        "shares": val["shares"]
+                    })
+                if len(f) > 1:
+                    h2 = get_holdings(cik, f[1]["acc"])
+                    for cusip, val in h2.items():
+                        prev_records[(cik, cusip)] = val
+            prog.empty()
+            
+            tot = {}
+            for r in curr_records:
+                k = (r["cik"], r["cusip"])
+                c = r["cusip"]
+                if k not in prev_records:
+                    diff_v = r["val"]
+                    diff_s = r["shares"]
+                else:
+                    p = prev_records[k]
+                    diff_v = max(0, r["val"] - p["val"]) if r["shares"] > p["shares"] else 0
+                    diff_s = max(0, r["shares"] - p["shares"]) if r["shares"] > p["shares"] else 0
+                
+                if diff_v > 0 or k not in prev_records:
+                    if c not in tot:
+                        tot[c] = {
+                            "name": r["name"],
+                            "funds": set(),
+                            "inflow": 0,
+                            "shares": 0,
+                            "details": []
+                        }
+                    tot[c]["funds"].add(r["fund"])
+                    tot[c]["inflow"] += diff_v
+                    tot[c]["shares"] += diff_s
+                    tot[c]["details"].append({
+                        "fund": r["fund"],
+                        "type": "신규" if k not in prev_records else "확대",
+                        "shares": diff_s,
+                        "val_m": round(diff_v / 1000.0, 1)
+                    })
+            
+            ranked = sorted(
+                tot.items(),
+                key=lambda x: (len(x[1]["funds"]), x[1]["inflow"]),
+                reverse=True
+            )[:top_n]
+            
+            data_rows = []
+            for cusip, d in ranked:
+                tk = resolve_ticker(cusip, d["name"])
+                rel_ret, dist_52w, ad_pass, cur_p = -15.0, -20.0, True, 0.0
+                
+                if tk != "-":
+                    try:
+                        t = yf.Ticker(tk)
+                        hist = t.history(period="3mo")
+                        if not hist.empty and len(hist) > 10:
+                            cur_p = hist["Close"].iloc[-1]
+                            dist_52w = ((cur_p - hist["High"].max()) / hist["High"].max()) * 100.0
+                            rel_ret = ((cur_p - hist["Close"].iloc[0]) / hist["Close"].iloc[0]) * 100.0
+                            clv = (
+                                (hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])
+                            ) / (hist["High"] - hist["Low"] + 1e-9)
+                            ad = (clv * hist["Volume"]).cumsum()
+                            ad_pass = ad.iloc[-1] >= ad.iloc[-10]
+                    except:
+                        pass
+                
+                data_rows.append({
+                    "CUSIP": cusip,
+                    "Ticker": tk,
+                    "Name": d["name"],
+                    "Sector": "Tech" if tk in ["NVDA", "AAPL", "MSFT", "AVGO", "PLTR"] else "General",
+                    "Fund_Count": len(d["funds"]),
+                    "Inflow_M": round(d["inflow"] / 1000.0, 1),
+                    "Shares_Sum": d["shares"],
+                    "Rel_Return": round(rel_ret, 1),
+                    "Dist_52W": round(dist_52w, 1),
+                    "AD_Pass": ad_pass,
+                    "Price": f"${cur_p:.2f}" if cur_p > 0 else "-",
+                    "details": d["details"]
+                })
+            
+            res_df = calc_score(pd.DataFrame(data_rows), sector_neutral=sec_neutral)
+            st.session_state["result_df"] = res_df
+
+if "result_df" in st.session_state:
+    df_show = st.session_state["result_df"].copy()
+    if pass_only:
+        df_show = df_show[df_show["AD_Pass"] == True]
+        
+    st.subheader(f"📋 퀀트 랭킹 & 투자 시그널 (총 {len(df_show)}개 종목)")
+    table_df = df_show[[
+        "Rank", "Ticker", "Name", "SmartScore", "Signal",
+        "M1", "M2", "M3", "Fund_Count", "Inflow_M", "Price"
+    ]]
+    table_df.columns = [
+        "순위", "티커", "기업명", "스마트스코어", "투자시그널",
+        "M1", "M2", "M3", "기관수", "유입액($M)", "현재가"
+    ]
+    st.dataframe(table_df, use_container_width=True, hide_index=True)
+    
+    st.divider()
+    st.subheader("🔍 종목별 매수 기관 드릴다운 상세")
+    sel_tk = st.selectbox("확인할 종목을 선택하세요:", df_show["Ticker"].tolist())
+    if sel_tk:
+        sel_row = df_show[df_show["Ticker"] == sel_tk].iloc[0]
+        st.markdown(
+            f"**{sel_row['Name']} ({sel_tk})** | 스마트스코어: **{sel_row['SmartScore']}점** ({sel_row['Signal']})"
+        )
+        dt_df = pd.DataFrame(sel_row["details"])
+        dt_df.columns = ["기관명", "구분", "매수주식수", "매수금액($M)"]
+        st.dataframe(dt_df, use_container_width=True, hide_index=True)

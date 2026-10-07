@@ -211,6 +211,7 @@ def get_holdings(cik, acc):
         return {}
 
 def min_max(s, invert=False):
+    s = s.fillna(0)
     mn, mx = s.min(), s.max()
     if mn == mx:
         return pd.Series(50.0, index=s.index)
@@ -219,6 +220,8 @@ def min_max(s, invert=False):
     return (s - mn) / (mx - mn) * 100.0
 
 def calc_score(df, sector_neutral=False):
+    if df.empty:
+        return df
     d = df.copy()
     if sector_neutral and "Sector" in d.columns:
         d["Rel_Return"] = d.groupby("Sector")["Rel_Return"].transform(lambda s: s - s.mean())
@@ -229,26 +232,30 @@ def calc_score(df, sector_neutral=False):
         + 0.30 * min_max(d["Shares_Sum"])
     )
     m2_inst = (
-        d["Fund_Count"].rank(pct=True) * 50.0
-        + d["Inflow_M"].rank(pct=True) * 50.0
+        d["Fund_Count"].rank(pct=True).fillna(0.5) * 50.0
+        + d["Inflow_M"].rank(pct=True).fillna(0.5) * 50.0
     )
-    z_inst = stats.zscore(d["Fund_Count"].fillna(0))
+    
+    f_counts = d["Fund_Count"].fillna(0).to_numpy()
+    z_inst = stats.zscore(f_counts) if len(f_counts) > 1 and np.std(f_counts) > 0 else np.zeros(len(d))
 
     m1_lag = (
         0.60 * min_max(d["Rel_Return"], invert=True)
         + 0.40 * min_max(d["Dist_52W"], invert=True)
     )
     m2_lag = (
-        (-d["Rel_Return"]).rank(pct=True) * 50.0
-        + (-d["Dist_52W"]).rank(pct=True) * 50.0
+        (-d["Rel_Return"]).rank(pct=True).fillna(0.5) * 50.0
+        + (-d["Dist_52W"]).rank(pct=True).fillna(0.5) * 50.0
     )
-    z_lag = -stats.zscore(d["Rel_Return"].fillna(0))
+    
+    r_rets = d["Rel_Return"].fillna(0).to_numpy()
+    z_lag = -stats.zscore(r_rets) if len(r_rets) > 1 and np.std(r_rets) > 0 else np.zeros(len(d))
 
-    d["M1"] = (0.55 * m1_inst + 0.45 * m1_lag).round(1)
-    d["M2"] = (0.55 * m2_inst + 0.45 * m2_lag).round(1)
-    z_comp = 0.55 * z_inst + 0.45 * z_lag
+    d["M1"] = (0.55 * m1_inst + 0.45 * m1_lag).round(1).fillna(50.0)
+    d["M2"] = (0.55 * m2_inst + 0.45 * m2_lag).round(1).fillna(50.0)
+    z_comp = 0.55 * np.nan_to_num(z_inst) + 0.45 * np.nan_to_num(z_lag)
     d["M3"] = (stats.norm.cdf(z_comp) * 100.0).round(1)
-    d["SmartScore"] = (0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]).round(1)
+    d["SmartScore"] = (0.20 * d["M1"] + 0.40 * d["M2"] + 0.40 * d["M3"]).round(1).fillna(50.0)
 
     sigs = []
     for _, r in d.iterrows():
@@ -263,7 +270,9 @@ def calc_score(df, sector_neutral=False):
         else:
             sigs.append("⚪ NEUTRAL")
     d["Signal"] = sigs
-    d["Rank"] = d["SmartScore"].rank(ascending=False, method="min").astype(int)
+    
+    # rank 후 NaN 방어 처리
+    d["Rank"] = d["SmartScore"].rank(ascending=False, method="min").fillna(len(d)).astype(int)
     return d.sort_values(by="Rank").reset_index(drop=True)
 
 # --- UI 레이아웃 ---
@@ -337,7 +346,7 @@ if st.button("🚀 13F 전수 수급 집계 & 퀀트 스코어링 실행", type=
                 for cusip, val in h2.items():
                     prev_records[(cik, cusip)] = val
         
-        status_box.markdown("📊 **기관 수급 변화량 집계 및 퀀트 팩터 산출 중...**")
+        status_box.markdown("📊 **기관 수급 변화량 집계 및 주가/퀀트 팩터 산출 중...**")
         prog.empty()
         status_box.empty()
         
@@ -391,24 +400,24 @@ if st.button("🚀 13F 전수 수급 집계 & 퀀트 스코어링 실행", type=
                     hist = t.history(period="6mo")
                     if not hist.empty and len(hist) > 10:
                         cur_p = float(hist["Close"].iloc[-1])
-                        dist_52w = ((cur_p - hist["High"].max()) / hist["High"].max()) * 100.0
-                        rel_ret = ((cur_p - hist["Close"].iloc[0]) / hist["Close"].iloc[0]) * 100.0
+                        max_p = float(hist["High"].max())
+                        min_p = float(hist["Low"].min())
+                        start_p = float(hist["Close"].iloc[0])
+                        
+                        dist_52w = ((cur_p - max_p) / max_p) * 100.0 if max_p > 0 else 0.0
+                        rel_ret = ((cur_p - start_p) / start_p) * 100.0 if start_p > 0 else 0.0
                         
                         target_dt = pd.to_datetime(d["f_date"]).tz_localize(hist.index.tz)
                         hist_since = hist[hist.index >= target_dt]
-                        if not hist_since.empty:
-                            base_p = float(hist_since["Close"].iloc[0])
-                        else:
-                            base_p = float(hist["Close"].iloc[0])
+                        base_p = float(hist_since["Close"].iloc[0]) if not hist_since.empty else start_p
                         
                         price_chg = cur_p - base_p
                         pct_chg = (price_chg / base_p) * 100.0 if base_p > 0 else 0.0
                         
-                        clv = (
-                            (hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])
-                        ) / (hist["High"] - hist["Low"] + 1e-9)
+                        denom = (hist["High"] - hist["Low"]).replace(0, 1e-9)
+                        clv = ((hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])) / denom
                         ad = (clv * hist["Volume"]).cumsum()
-                        ad_pass = ad.iloc[-1] >= ad.iloc[-10]
+                        ad_pass = bool(ad.iloc[-1] >= ad.iloc[-10])
                 except Exception:
                     pass
             

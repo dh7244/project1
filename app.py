@@ -491,7 +491,6 @@ if run_btn:
                         price_chg = cur_p - base_p
                         pct_chg = (price_chg / base_p) * 100.0 if base_p > 0 else 0.0
                         
-                        # A/D Line 및 장중 매집강도(CLV) 정량 계산
                         denom = (hist["High"] - hist["Low"]).replace(0, 1e-9)
                         clv_series = ((hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])) / denom
                         ad_series = (clv_series * hist["Volume"]).cumsum()
@@ -500,7 +499,6 @@ if run_btn:
                         ad_prev = float(ad_series.iloc[-10])
                         ad_pass = bool(ad_cur >= ad_prev)
                         
-                        # 10일 A/D Line 변화율 및 최근 10일 평균 CLV(-1.0 ~ +1.0)
                         denom_ad = abs(ad_prev) if abs(ad_prev) > 0 else 1.0
                         ad_chg_pct = ((ad_cur - ad_prev) / denom_ad) * 100.0
                         avg_clv = float(clv_series.iloc[-10:].mean())
@@ -649,9 +647,10 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 if sel_row["Price_Val"] > 0:
                     st.write(f"- **기간 상대 수익률 (비중 60%)**: {sel_row['Rel_Return']:+.1f}%")
                     st.write(f"- **52주 최고가 괴리율 (비중 40%)**: {sel_row['Dist_52W']:.1f}%")
-                    st.write(f"- **공시일 주가 $\\rightarrow$ 현재가**: ${sel_row['Base_Price']:.2f} $\\rightarrow$ ${sel_row['Price_Val']:.2f}")
                     
-                    # ⭐️ 매집강도 정량 수치 표기 (PASS/FAIL + 구체적 수치)
+                    # 💡 LaTeX 충돌 해결: 일반 텍스트 화살표(→)로 안전하게 출력
+                    st.write(f"- **공시일 주가 → 현재가**: ${sel_row['Base_Price']:.2f} →${sel_row['Price_Val']:.2f}")
+                    
                     pass_str = "✅ PASS (매집 유입 확인)" if sel_row["AD_Pass"] else "❌ FAIL (분산/차익매도 우려)"
                     st.markdown(f"- **A/D Line 매집강도 판정**: **{pass_str}**")
                     st.write(f"  * **최근 10일 A/D 추세 변화율**: `{sel_row['AD_Chg_Pct']:+.1f}%` *(양수일수록 매집 강함)*")
@@ -659,9 +658,20 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 else:
                     st.warning("⚠️ 실시간 시세 미조회 종목으로 가격 지표 및 추천 시그널이 산출되지 않았습니다.")
 
+        # 💡 매수 기관 목록: 매수금액($M) 기준 내림차순 정렬 및 가독성 포맷 적용
         st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록")
         dt_df = pd.DataFrame(sel_row["details"])
+        dt_df = dt_df.sort_values(by="val_m", ascending=False).reset_index(drop=True)
         dt_df.columns = ["기관명", "매수구분", "매수주식수", "매수금액($M)"]
-        st.dataframe(dt_df, use_container_width=True, hide_index=True)
+        
+        st.dataframe(
+            dt_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "매수주식수": st.column_config.NumberColumn(format="%d 주"),
+                "매수금액($M)": st.column_config.NumberColumn(format="$%.1f M"),
+            }
+        )
     else:
         st.info("선택한 필터 조건에 부합하는 종목이 없습니다.")

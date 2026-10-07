@@ -49,52 +49,25 @@ DEFAULT_FUNDS = {
 }
 
 TICKER_MAP = {
-    "037833100": "AAPL", "594918104": "MSFT", "67066G104": "NVDA", "023135106": "AMZN",
-    "02079K305": "GOOGL", "02079K107": "GOOG", "30303M102": "META", "88160R101": "TSLA",
-    "064058100": "AVGO", "46625H100": "JPM", "532457108": "LLY", "931142103": "WMT",
-    "92826C839": "V", "254687106": "DIS", "69608A108": "PLTR", "22788C105": "CRWD",
-    "874039100": "TSM", "007903107": "AMD", "74340W103": "QCOM", "09247X101": "BLK",
-    "025816109": "AXP", "060505104": "BAC", "191216100": "KO", "166764100": "CVX"
-}
-
-def clean_name(name):
-    name = re.sub(r'\b(INC|CORP|COMPANY|CO|LTD|HOLDINGS|HLDG|LLC|PLC|DE|NEW|CLASS [A-Z]|CL [A-Z]|COM)\b', '', name, flags=re.IGNORECASE)
-    name = re.sub(r'[^a-zA-Z0-9 ]', ' ', name)
-    return ' '.join(name.split())
-
-def resolve_ticker(cusip, name):
-    if cusip in TICKER_MAP:
-        return TICKER_MAP[cusip]
-    cl = clean_name(name).split()
-    if cl and 1 <= len(cl[0]) <= 5 and cl[0].isalpha():
-        return cl[0].upper()
-    return "-"
-
-@st.cache_data(ttl=86400)
-def search_sec_company(keyword):
-    """SEC 회사명 / CIK 매핑 리스트에서 검색"""
-    url = "https://www.sec.gov/files/company_tickers.json"
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            kw = keyword.lower().strip()
-            results = {}
-            for item in data.values():
-                title = item.get("title", "")
-                cik = str(item.get("cik_str", "")).zfill(10)
-                ticker = item.get("ticker", "")
-                if kw in title.lower() or kw in cik or kw == ticker.lower():
-                    results[f"{title} ({ticker})"] = cik
-                    if len(results) >= 10:
-                        break
-            return results
-    except Exception:
-        pass
-    return {}
-
-def get_filings(cik):
-    time.sleep(0.12)
-    url = f"https://data.sec.gov/submissions/CIK{str(cik).zfill(10)}.json"
-    try:
-        res = requests.get(url, headers=HEADERS, timeout
+    "037833100": "AAPL",
+    "594918104": "MSFT",
+    "67066G104": "NVDA",
+    "023135106": "AMZN",
+    "02079K305": "GOOGL",
+    "02079K107": "GOOG",
+    "30303M102": "META",
+    "88160R101": "TSLA",
+    "064058100": "AVGO",
+    "46625H100": "JPM",
+    "532457108": "LLY",
+    "931142103": "WMT",
+    "92826C839": "V",
+    "254687106": "DIS",
+    "69608A108": "PLTR",
+    "22788C105": "CRWD",
+    "874039100": "TSM",
+    "007903107": "AMD",
+    "74340W103": "QCOM",
+    "09247X101": "BLK",
+    "025816109": "AXP",
+    "06

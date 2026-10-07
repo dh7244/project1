@@ -80,56 +80,22 @@ DEFAULT_FUNDS = {
     "노르웨이 국부펀드 (Norges Bank)": "0001270787"
 }
 
-# 1. CUSIP 기준 직접 매핑 (정확도 100%)
 COMMON_CUSIP_MAP = {
-    "84615Q103": "SPCX",   # Space Exploration Technologies Corp (스페이스X)
-    "037833100": "AAPL",   # Apple Inc
-    "594918104": "MSFT",   # Microsoft Corp
-    "67066G104": "NVDA",   # NVIDIA Corp
-    "023135106": "AMZN",   # Amazon.com Inc
-    "02079K305": "GOOGL",  # Alphabet Class A
-    "02079K107": "GOOG",   # Alphabet Class C
-    "30303M102": "META",   # Meta Platforms
-    "88160R101": "TSLA",   # Tesla Inc
-    "064058100": "AVGO",   # Broadcom Inc
-    "46625H100": "JPM",    # JPMorgan Chase
-    "532457108": "LLY",    # Eli Lilly
-    "931142103": "WMT",    # Walmart Inc
-    "92826C839": "V",      # Visa Inc
-    "254687106": "DIS",    # Walt Disney Co
-    "69608A108": "PLTR",   # Palantir Technologies
-    "22788C105": "CRWD",   # CrowdStrike
-    "874039100": "TSM",    # Taiwan Semiconductor
-    "007903107": "AMD",    # Advanced Micro Devices
-    "74340W103": "QCOM",   # Qualcomm Inc
-    "09247X101": "BLK",    # BlackRock Inc
-    "025816109": "AXP",    # American Express
-    "060505104": "BAC",    # Bank of America
-    "191216100": "KO",     # Coca-Cola Co
-    "166764100": "CVX",    # Chevron Corp
-    "713448108": "PEP",    # PepsiCo
-    "478160104": "JNJ",    # Johnson & Johnson
-    "00206R102": "T",      # AT&T
-    "91324P102": "UNH"     # UnitedHealth
+    "84615Q103": "SPCX", "037833100": "AAPL", "594918104": "MSFT", "67066G104": "NVDA",
+    "023135106": "AMZN", "02079K305": "GOOGL", "02079K107": "GOOG", "30303M102": "META",
+    "88160R101": "TSLA", "064058100": "AVGO", "46625H100": "JPM", "532457108": "LLY",
+    "931142103": "WMT", "92826C839": "V", "254687106": "DIS", "69608A108": "PLTR",
+    "22788C105": "CRWD", "874039100": "TSM", "007903107": "AMD", "74340W103": "QCOM",
+    "09247X101": "BLK", "025816109": "AXP", "060505104": "BAC", "191216100": "KO",
+    "166764100": "CVX", "713448108": "PEP", "478160104": "JNJ", "00206R102": "T",
+    "91324P102": "UNH"
 }
 
-# 2. 기업명 키워드 매핑 테이블
 EXPLICIT_NAME_MAP = {
-    "SPACE EXPLORATION": "SPCX",
-    "SPACEX": "SPCX",
-    "MICROSOFT": "MSFT",
-    "APPLE": "AAPL",
-    "NVIDIA": "NVDA",
-    "AMAZON": "AMZN",
-    "ALPHABET": "GOOGL",
-    "GOOGLE": "GOOGL",
-    "META PLATFORMS": "META",
-    "FACEBOOK": "META",
-    "TESLA": "TSLA",
-    "BROADCOM": "AVGO",
-    "PALANTIR": "PLTR",
-    "TAIWAN SEMICONDUCTOR": "TSM",
-    "BERKSHIRE HATHAWAY": "BRK-B"
+    "SPACE EXPLORATION": "SPCX", "SPACEX": "SPCX", "MICROSOFT": "MSFT", "APPLE": "AAPL",
+    "NVIDIA": "NVDA", "AMAZON": "AMZN", "ALPHABET": "GOOGL", "GOOGLE": "GOOGL",
+    "META PLATFORMS": "META", "FACEBOOK": "META", "TESLA": "TSLA", "BROADCOM": "AVGO",
+    "PALANTIR": "PLTR", "TAIWAN SEMICONDUCTOR": "TSM", "BERKSHIRE HATHAWAY": "BRK-B"
 }
 
 @st.cache_data(ttl=86400)
@@ -153,7 +119,6 @@ NAME_DICT = load_sec_ticker_directory()
 
 @st.cache_data(ttl=86400)
 def search_yahoo_ticker(query_name):
-    """야후 파이낸스 실시간 심볼 검색 Fallback"""
     clean_q = re.sub(r'[^a-zA-Z0-9 ]', ' ', query_name).strip()
     words = clean_q.split()[:3]
     if not words:
@@ -166,7 +131,6 @@ def search_yahoo_ticker(query_name):
             quotes = r.json().get("quotes", [])
             if quotes and "symbol" in quotes[0]:
                 sym = quotes[0]["symbol"].upper()
-                # 옵션이나 복잡한 파생 심볼 제외
                 if len(sym) <= 5 and sym.isalpha():
                     return sym
     except Exception:
@@ -174,26 +138,18 @@ def search_yahoo_ticker(query_name):
     return "-"
 
 def resolve_ticker_advanced(cusip, name):
-    # 1. CUSIP 직접 매칭
     if cusip in COMMON_CUSIP_MAP:
         return COMMON_CUSIP_MAP[cusip]
-    
-    # 2. 기업명 명시적 키워드 검사 (예: SPACE EXPLORATION -> SPCX)
     nm_upper = name.upper()
     for kw, sym in EXPLICIT_NAME_MAP.items():
         if kw in nm_upper:
             return sym
-            
-    # 3. SEC 공식 Ticker 데이터베이스 매칭
     clean_n = re.sub(r'[^A-Z0-9]', '', nm_upper)
     if clean_n in NAME_DICT:
         return NAME_DICT[clean_n]
-    
-    # 4. 야후 파이낸스 실시간 매칭
     found_tk = search_yahoo_ticker(name)
     if found_tk != "-":
         return found_tk
-
     return "-"
 
 def get_filings(cik):
@@ -331,9 +287,121 @@ def calc_score(df, sector_neutral=False):
         else:
             sigs.append("⚪ NEUTRAL")
     d["Signal"] = sigs
-    
     d["Rank"] = d["SmartScore"].rank(ascending=False, method="min").fillna(len(d)).astype(int)
     return d.sort_values(by="Rank").reset_index(drop=True)
+
+# ⭐️ 모바일 세션 끊김을 방지하는 핵심 캐시 함수 (결과를 서버 메모리에 12시간 저장)
+@st.cache_data(ttl=43200, show_spinner=False)
+def run_quant_engine(funds_dict_items, top_n, sec_neutral):
+    curr_records = []
+    prev_records = {}
+    filing_dates = []
+    
+    for name, cik in funds_dict_items:
+        f = get_filings(cik)
+        if not f:
+            continue
+        filing_dates.append(f[0]["date"])
+        h1 = get_holdings(cik, f[0]["acc"])
+        for cusip, val in h1.items():
+            curr_records.append({
+                "cik": cik, "fund": name, "cusip": cusip,
+                "name": val["name"], "val": val["val"], "shares": val["shares"],
+                "f_date": f[0]["date"]
+            })
+        if len(f) > 1:
+            h2 = get_holdings(cik, f[1]["acc"])
+            for cusip, val in h2.items():
+                prev_records[(cik, cusip)] = val
+    
+    tot = {}
+    for r in curr_records:
+        k = (r["cik"], r["cusip"])
+        c = r["cusip"]
+        if k not in prev_records:
+            diff_v = r["val"]
+            diff_s = r["shares"]
+        else:
+            p = prev_records[k]
+            diff_v = max(0, r["val"] - p["val"]) if r["shares"] > p["shares"] else 0
+            diff_s = max(0, r["shares"] - p["shares"]) if r["shares"] > p["shares"] else 0
+        
+        if diff_v > 0 or k not in prev_records:
+            if c not in tot:
+                tot[c] = {
+                    "name": r["name"],
+                    "funds": set(),
+                    "inflow": 0,
+                    "shares": 0,
+                    "f_date": r["f_date"],
+                    "details": []
+                }
+            tot[c]["funds"].add(r["fund"])
+            tot[c]["inflow"] += diff_v
+            tot[c]["shares"] += diff_s
+            tot[c]["details"].append({
+                "fund": r["fund"],
+                "type": "신규" if k not in prev_records else "확대",
+                "shares": diff_s,
+                "val_m": round(diff_v / 1000.0, 1)
+            })
+    
+    ranked = sorted(
+        tot.items(),
+        key=lambda x: (len(x[1]["funds"]), x[1]["inflow"]),
+        reverse=True
+    )[:top_n]
+    
+    data_rows = []
+    for cusip, d in ranked:
+        tk = resolve_ticker_advanced(cusip, d["name"])
+        rel_ret, dist_52w, ad_pass, cur_p = -15.0, -20.0, True, 0.0
+        price_chg, pct_chg = 0.0, 0.0
+
+        if tk != "-":
+            try:
+                t = yf.Ticker(tk)
+                hist = t.history(period="6mo", timeout=3)
+                if not hist.empty and len(hist) > 10:
+                    cur_p = float(hist["Close"].iloc[-1])
+                    max_p = float(hist["High"].max())
+                    start_p = float(hist["Close"].iloc[0])
+                    
+                    dist_52w = ((cur_p - max_p) / max_p) * 100.0 if max_p > 0 else 0.0
+                    rel_ret = ((cur_p - start_p) / start_p) * 100.0 if start_p > 0 else 0.0
+                    
+                    target_dt = pd.to_datetime(d["f_date"]).tz_localize(hist.index.tz)
+                    hist_since = hist[hist.index >= target_dt]
+                    base_p = float(hist_since["Close"].iloc[0]) if not hist_since.empty else start_p
+                    
+                    price_chg = cur_p - base_p
+                    pct_chg = (price_chg / base_p) * 100.0 if base_p > 0 else 0.0
+                    
+                    denom = (hist["High"] - hist["Low"]).replace(0, 1e-9)
+                    clv = ((hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])) / denom
+                    ad = (clv * hist["Volume"]).cumsum()
+                    ad_pass = bool(ad.iloc[-1] >= ad.iloc[-10])
+            except Exception:
+                pass
+        
+        data_rows.append({
+            "CUSIP": cusip,
+            "Ticker": tk,
+            "Name": d["name"],
+            "Sector": "Tech/Aerospace" if tk in ["SPCX", "NVDA", "AAPL", "MSFT", "AVGO", "PLTR"] else "General",
+            "Fund_Count": len(d["funds"]),
+            "Inflow_M": round(d["inflow"] / 1000.0, 1),
+            "Shares_Sum": d["shares"],
+            "Rel_Return": round(rel_ret, 1),
+            "Dist_52W": round(dist_52w, 1),
+            "AD_Pass": ad_pass,
+            "Price_Val": round(cur_p, 2),
+            "Price_Chg": round(price_chg, 2),
+            "Pct_Chg": round(pct_chg, 2),
+            "details": d["details"]
+        })
+    
+    return calc_score(pd.DataFrame(data_rows), sector_neutral=sec_neutral)
 
 # --- UI 레이아웃 ---
 st.title("🎯 SEC 13F 스마트스코어 & 시그널 v1.5")
@@ -366,142 +434,44 @@ with col2:
 with col3:
     pass_only = st.checkbox("A/D Line 통과(PASS) 종목만 표시", value=False)
 
-if st.button("🚀 13F 전수 수급 집계 & 퀀트 스코어링 실행", type="primary"):
-    funds_to_analyze = {
-        k: st.session_state["custom_funds"][k]
-        for k in selected_fund_names
-        if k in st.session_state["custom_funds"]
-    }
-    
+btn_col1, btn_col2 = st.columns([3, 1])
+with btn_col1:
+    run_btn = st.button("🚀 13F 전수 수급 집계 & 퀀트 스코어링 실행", type="primary")
+with btn_col2:
+    if st.button("🔄 캐시 초기화 (새로고침)"):
+        st.cache_data.clear()
+        st.session_state.pop("result_df", None)
+        st.rerun()
+
+funds_to_analyze = {
+    k: st.session_state["custom_funds"][k]
+    for k in selected_fund_names
+    if k in st.session_state["custom_funds"]
+}
+
+if run_btn:
     if not funds_to_analyze:
         st.error("최소 1개 이상의 기관을 선택해야 합니다.")
     else:
-        status_box = st.empty()
-        prog = st.progress(0.0)
-        
-        curr_records = []
-        prev_records = {}
-        filing_dates = []
-        
-        fund_items = list(funds_to_analyze.items())
-        tot_cnt = len(fund_items)
-        
-        for idx, (name, cik) in enumerate(fund_items):
-            status_box.markdown(f"**[{idx+1}/{tot_cnt}]** `{name}` 최신 13F 공시 수집 중...")
-            prog.progress((idx + 1) / tot_cnt)
-            
-            f = get_filings(cik)
-            if not f:
-                continue
-            filing_dates.append(f[0]["date"])
-            h1 = get_holdings(cik, f[0]["acc"])
-            for cusip, val in h1.items():
-                curr_records.append({
-                    "cik": cik, "fund": name, "cusip": cusip,
-                    "name": val["name"], "val": val["val"], "shares": val["shares"],
-                    "f_date": f[0]["date"]
-                })
-            if len(f) > 1:
-                h2 = get_holdings(cik, f[1]["acc"])
-                for cusip, val in h2.items():
-                    prev_records[(cik, cusip)] = val
-        
-        status_box.markdown("📊 **기관 수급 집계 및 정확한 티커/주가 검증 중...**")
-        prog.empty()
-        status_box.empty()
-        
-        tot = {}
-        for r in curr_records:
-            k = (r["cik"], r["cusip"])
-            c = r["cusip"]
-            if k not in prev_records:
-                diff_v = r["val"]
-                diff_s = r["shares"]
-            else:
-                p = prev_records[k]
-                diff_v = max(0, r["val"] - p["val"]) if r["shares"] > p["shares"] else 0
-                diff_s = max(0, r["shares"] - p["shares"]) if r["shares"] > p["shares"] else 0
-            
-            if diff_v > 0 or k not in prev_records:
-                if c not in tot:
-                    tot[c] = {
-                        "name": r["name"],
-                        "funds": set(),
-                        "inflow": 0,
-                        "shares": 0,
-                        "f_date": r["f_date"],
-                        "details": []
-                    }
-                tot[c]["funds"].add(r["fund"])
-                tot[c]["inflow"] += diff_v
-                tot[c]["shares"] += diff_s
-                tot[c]["details"].append({
-                    "fund": r["fund"],
-                    "type": "신규" if k not in prev_records else "확대",
-                    "shares": diff_s,
-                    "val_m": round(diff_v / 1000.0, 1)
-                })
-        
-        ranked = sorted(
-            tot.items(),
-            key=lambda x: (len(x[1]["funds"]), x[1]["inflow"]),
-            reverse=True
-        )[:top_n]
-        
-        data_rows = []
-        for cusip, d in ranked:
-            tk = resolve_ticker_advanced(cusip, d["name"])
-            rel_ret, dist_52w, ad_pass, cur_p = -15.0, -20.0, True, 0.0
-            price_chg, pct_chg = 0.0, 0.0
+        with st.spinner(f"선택된 {len(funds_to_analyze)}개 기관 수급 및 시세 분석 중... (최초 1회 실행 후 캐시 저장)"):
+            tup_items = tuple(funds_to_analyze.items())
+            res = run_quant_engine(tup_items, top_n, sec_neutral)
+            st.session_state["result_df"] = res
+            st.session_state["selected_ticker"] = res["Ticker"].iloc[0] if not res.empty else None
 
-            if tk != "-":
-                try:
-                    t = yf.Ticker(tk)
-                    hist = t.history(period="6mo", timeout=3)
-                    if not hist.empty and len(hist) > 10:
-                        cur_p = float(hist["Close"].iloc[-1])
-                        max_p = float(hist["High"].max())
-                        start_p = float(hist["Close"].iloc[0])
-                        
-                        dist_52w = ((cur_p - max_p) / max_p) * 100.0 if max_p > 0 else 0.0
-                        rel_ret = ((cur_p - start_p) / start_p) * 100.0 if start_p > 0 else 0.0
-                        
-                        target_dt = pd.to_datetime(d["f_date"]).tz_localize(hist.index.tz)
-                        hist_since = hist[hist.index >= target_dt]
-                        base_p = float(hist_since["Close"].iloc[0]) if not hist_since.empty else start_p
-                        
-                        price_chg = cur_p - base_p
-                        pct_chg = (price_chg / base_p) * 100.0 if base_p > 0 else 0.0
-                        
-                        denom = (hist["High"] - hist["Low"]).replace(0, 1e-9)
-                        clv = ((hist["Close"] - hist["Low"]) - (hist["High"] - hist["Close"])) / denom
-                        ad = (clv * hist["Volume"]).cumsum()
-                        ad_pass = bool(ad.iloc[-1] >= ad.iloc[-10])
-                except Exception:
-                    pass
-            
-            data_rows.append({
-                "CUSIP": cusip,
-                "Ticker": tk,
-                "Name": d["name"],
-                "Sector": "Aerospace/Tech" if tk in ["SPCX", "NVDA", "AAPL", "MSFT", "AVGO", "PLTR"] else "General",
-                "Fund_Count": len(d["funds"]),
-                "Inflow_M": round(d["inflow"] / 1000.0, 1),
-                "Shares_Sum": d["shares"],
-                "Rel_Return": round(rel_ret, 1),
-                "Dist_52W": round(dist_52w, 1),
-                "AD_Pass": ad_pass,
-                "Price_Val": round(cur_p, 2),
-                "Price_Chg": round(price_chg, 2),
-                "Pct_Chg": round(pct_chg, 2),
-                "details": d["details"]
-            })
-        
-        res_df = calc_score(pd.DataFrame(data_rows), sector_neutral=sec_neutral)
-        st.session_state["result_df"] = res_df
-        st.session_state["selected_ticker"] = res_df["Ticker"].iloc[0] if not res_df.empty else None
+# 세션이 끊겨도 캐시된 결과가 있으면 자동 복구 표시
+if "result_df" not in st.session_state and funds_to_analyze:
+    tup_items = tuple(funds_to_analyze.items())
+    try:
+        # 이전에 캐시된 연산이 있는지 확인하여 즉시 복구
+        cached_res = run_quant_engine(tup_items, top_n, sec_neutral)
+        if not cached_res.empty:
+            st.session_state["result_df"] = cached_res
+            st.session_state["selected_ticker"] = cached_res["Ticker"].iloc[0]
+    except Exception:
+        pass
 
-if "result_df" in st.session_state:
+if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     df_show = st.session_state["result_df"].copy()
     if pass_only:
         df_show = df_show[df_show["AD_Pass"] == True].reset_index(drop=True)

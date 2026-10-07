@@ -317,7 +317,6 @@ def calc_score(df, sector_neutral=False):
 st.title("🎯 SEC 13F 스마트스코어 & 시그널 v1.5")
 st.caption("월가 Top 50 기관 전수 분석 | 3-Factor 앙상블 | 마이크로스트럭처(A/D Line) 검증 | 섹터 중립화")
 
-# 💡 상단 가이드 Expander (누구나 직관적으로 이해할 수 있는 설명 추가)
 with st.expander("📖 스마트스코어 & M1 · M2 · M3 팩터 직관 가이드 (클릭하여 펼치기)", expanded=False):
     st.markdown(
         """
@@ -543,22 +542,22 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
     st.caption("💡 **표에서 확인하고 싶은 기업의 행을 터치/클릭**하면 바로 아래에 상세 팩터 분석 및 매수 기관 정보가 연동됩니다.")
 
-    # 🎨 무한 렌더링 없는 안전한 HTML 색상 포맷터 (+는 빨강, -는 파랑)
-    def fmt_price_chg_html(v):
+    # 🔴/🔵 직관적 심볼 포맷터 (HTML 태그 깨짐 원천 방지)
+    def fmt_price_chg_symbol(v):
         if pd.isna(v) or v == 0.0:
             return "$0.00"
         elif v > 0:
-            return f'<span style="color:#E03131; font-weight:bold;">▲ +${v:.2f}</span>'
+            return f"🔴 +${v:.2f}"
         else:
-            return f'<span style="color:#1971C2; font-weight:bold;">▼ -${abs(v):.2f}</span>'
+            return f"🔵 -${abs(v):.2f}"
 
-    def fmt_pct_chg_html(v):
+    def fmt_pct_chg_symbol(v):
         if pd.isna(v) or v == 0.0:
             return "0.00%"
         elif v > 0:
-            return f'<span style="color:#E03131; font-weight:bold;">▲ +{v:.2f}%</span>'
+            return f"🔴 +{v:.2f}%"
         else:
-            return f'<span style="color:#1971C2; font-weight:bold;">▼ -{abs(v):.2f}%</span>'
+            return f"🔵 -{abs(v):.2f}%"
 
     table_df = df_show[[
         "Rank", "Ticker", "Name", "SmartScore", "M1", "M2", "M3",
@@ -572,9 +571,9 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         "기관수", "유입액($M)"
     ]
 
-    # 색상 적용된 텍스트로 치환
-    table_df["공시후변동($)"] = table_df["공시후변동($)"].apply(fmt_price_chg_html)
-    table_df["공시후변동률(%)"] = table_df["공시후변동률(%)"].apply(fmt_pct_chg_html)
+    # 심볼 적용
+    table_df["공시후변동($)"] = table_df["공시후변동($)"].apply(fmt_price_chg_symbol)
+    table_df["공시후변동률(%)"] = table_df["공시후변동률(%)"].apply(fmt_pct_chg_symbol)
 
     event = st.dataframe(
         table_df,

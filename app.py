@@ -5,6 +5,7 @@ import re
 import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
+import requests
 from scipy import stats
 import streamlit as st
 import yfinance as yf
@@ -78,67 +79,73 @@ def resolve_ticker(cusip, name):
 
 def get_filings(cik):
   url = f"https://data.sec.gov/submissions/CIK{str(cik).zfill(10)}.json"
-  res = requests.get(url, headers=HEADERS, timeout=10)
-  if res.status_code != 200:
+  try:
+    res = requests.get(url, headers=HEADERS, timeout=10)
+    if res.status_code != 200:
+      return []
+    filings = res.json()["filings"]["recent"]
+    out = []
+    for i in range(len(filings["accessionNumber"])):
+      if filings["form"][i] in ["13F-HR", "13F-HR/A"]:
+        out.append({
+            "acc": filings["accessionNumber"][i],
+            "date": filings["filingDate"][i],
+        })
+        if len(out) == 2:
+          break
+    return out
+  except Exception:
     return []
-  filings = res.json()["filings"]["recent"]
-  out = []
-  for i in range(len(filings["accessionNumber"])):
-    if filings["form"][i] in ["13F-HR", "13F-HR/A"]:
-      out.append({
-          "acc": filings["accessionNumber"][i],
-          "date": filings["filingDate"][i],
-      })
-      if len(out) == 2:
-        break
-  return out
 
 
 def get_holdings(cik, acc):
   acc_clean = acc.replace("-", "")
   cik_clean = str(int(cik))
   url = f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc_clean}/"
-  res = requests.get(url, headers=HEADERS, timeout=10)
-  if res.status_code != 200:
-    return {}
-  xmls = re.findall(r'href="([^"]+\.xml)"', res.text, re.IGNORECASE)
-  target = None
-  for f in xmls:
-    fn = f.split("/")[-1].lower()
-    if "infotable" in fn or "13f" in fn:
-      target = f.split("/")[-1]
-      break
-  if not target and xmls:
-    target = xmls[0].split("/")[-1]
-  if not target:
-    return {}
+  try:
+    res = requests.get(url, headers=HEADERS, timeout=10)
+    if res.status_code != 200:
+      return {}
+    xmls = re.findall(r'href="([^"]+\.xml)"', res.text, re.IGNORECASE)
+    target = None
+    for f in xmls:
+      fn = f.split("/")[-1].lower()
+      if "infotable" in fn or "13f" in fn:
+        target = f.split("/")[-1]
+        break
+    if not target and xmls:
+      target = xmls[0].split("/")[-1]
+    if not target:
+      return {}
 
-  xml_res = requests.get(f"{url}{target}", headers=HEADERS, timeout=10)
-  xml_clean = re.sub(r'\sxmlns="[^"]+"', "", xml_res.text, count=1)
-  root = ET.fromstring(xml_clean)
+    xml_res = requests.get(f"{url}{target}", headers=HEADERS, timeout=10)
+    xml_clean = re.sub(r'\sxmlns="[^"]+"', "", xml_res.text, count=1)
+    root = ET.fromstring(xml_clean)
 
-  h = {}
-  for t in root.findall(".//infoTable"):
-    cusip = t.findtext("cusip", "").strip()
-    nm = t.findtext("nameOfIssuer", "UNKNOWN").strip()
-    v_str = t.findtext("value", "0").replace(",", "").strip()
-    try:
-      v = int(float(v_str))
-    except:
-      v = 0
-    s_node = t.find(".//sshPrnamt")
-    shares = (
-        int(float(s_node.text.replace(",", "").strip()))
-        if s_node is not None and s_node.text
-        else 0
-    )
-    if cusip:
-      if cusip in h:
-        h[cusip]["val"] += v
-        h[cusip]["shares"] += shares
-      else:
-        h[cusip] = {"name": nm, "cusip": cusip, "val": v, "shares": shares}
-  return h
+    h = {}
+    for t in root.findall(".//infoTable"):
+      cusip = t.findtext("cusip", "").strip()
+      nm = t.findtext("nameOfIssuer", "UNKNOWN").strip()
+      v_str = t.findtext("value", "0").replace(",", "").strip()
+      try:
+        v = int(float(v_str))
+      except:
+        v = 0
+      s_node = t.find(".//sshPrnamt")
+      shares = (
+          int(float(s_node.text.replace(",", "").strip()))
+          if s_node is not None and s_node.text
+          else 0
+      )
+      if cusip:
+        if cusip in h:
+          h[cusip]["val"] += v
+          h[cusip]["shares"] += shares
+        else:
+          h[cusip] = {"name": nm, "cusip": cusip, "val": v, "shares": shares}
+    return h
+  except Exception:
+    return {}
 
 
 def min_max(s, invert=False):

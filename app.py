@@ -1387,18 +1387,46 @@ if "backtest_summary" in st.session_state:
             })
 
         st.markdown("### ② 핵심 검증")
-        six = bt_summary[bt_summary["기간"] == "126D"]
+
+        # 126D는 최근 분기의 경우 아직 미래 데이터가 충분하지 않을 수 있다.
+        # 따라서 NaN을 그대로 표시하지 않고, 유효 관측치가 가장 많은 장기 구간을 우선 사용한다.
+        horizon_order = ["126D", "63D", "21D"]
+        horizon_stats = []
+        for h in horizon_order:
+            hdf = bt_summary[bt_summary["기간"] == h]
+            top5_h = hdf[hdf["SML_상위"] == "Top 5%"]
+            valid_n = int(top5_h.iloc[0]["N"]) if not top5_h.empty and pd.notna(top5_h.iloc[0]["N"]) else 0
+            horizon_stats.append((h, valid_n))
+        # 126D를 기본으로 하되, 유효 표본이 전혀 없으면 63D/21D로 자동 fallback
+        selected_horizon = next((h for h, n in horizon_stats if n > 0), "126D")
+        six = bt_summary[bt_summary["기간"] == selected_horizon]
         top5 = six[six["SML_상위"] == "Top 5%"]
         top15 = six[six["SML_상위"] == "Top 15%"]
         ls6 = six[six["SML_상위"] == "Long Top10% - Short Bottom10%"]
+
+        def _metric_pct(df, col, multiplier=1.0, decimals=2):
+            if df.empty or col not in df.columns:
+                return "N/A"
+            v = pd.to_numeric(df.iloc[0][col], errors="coerce")
+            if pd.isna(v):
+                return "N/A"
+            return f"{v * multiplier:+.{decimals}f}%"
+
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Top 5% 6개월 평균", f"{top5.iloc[0]['평균수익률']:+.2f}%" if not top5.empty else "N/A")
-        c2.metric("Top 15% 6개월 평균", f"{top15.iloc[0]['평균수익률']:+.2f}%" if not top15.empty else "N/A")
-        c3.metric("Top 5% 승률", f"{top5.iloc[0]['승률']*100:.1f}%" if not top5.empty else "N/A")
-        c4.metric("Top10 - Bottom10", f"{ls6.iloc[0]['평균수익률']:+.2f}%" if not ls6.empty else "N/A")
+        c1.metric(f"Top 5% {selected_horizon} 평균", _metric_pct(top5, "평균수익률"))
+        c2.metric(f"Top 15% {selected_horizon} 평균", _metric_pct(top15, "평균수익률"))
+        c3.metric(f"Top 5% 승률", _metric_pct(top5, "승률", multiplier=100.0, decimals=1))
+        c4.metric(f"Top10 - Bottom10 ({selected_horizon})", _metric_pct(ls6, "평균수익률"))
+
+        if selected_horizon != "126D":
+            st.warning(
+                f"최근 분기는 아직 6개월(126거래일) 미래수익률이 확정되지 않아 {selected_horizon} 기준으로 표시했습니다. "
+                "126D 결과는 충분한 시간이 지난 과거 분기가 쌓이면 자동으로 채워집니다."
+            )
         st.info(
             "좋은 SML이라면 Top 1% → 5% → 10% → 15% → 20% → 30%로 갈수록 미래수익률이 대체로 높아지고, "
-            "동시에 Top10% - Bottom10% Long-Short가 반복적으로 양수여야 합니다."
+            "동시에 Top10% - Bottom10% Long-Short가 반복적으로 양수여야 합니다. "
+            "각 기간의 N은 실제로 미래수익률이 계산 가능한 유효 표본 수입니다."
         )
 
         st.markdown("### ③ 개별 관측치")

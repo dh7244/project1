@@ -505,14 +505,13 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
     quarter_rows = []
     for qi, period in enumerate(sorted(periods)):
         curr_records, prev_records = [], {}
-        period_date = None
+        filing_dates = []
         for (name, cik), fs in all_filings.items():
             current = next((f for f in fs if f["period"] == period), None)
             if not current:
                 continue
             prev = next((f for f in fs if f["period"] < period), None)
-            if period_date is None:
-                period_date = current["date"]
+            filing_dates.append(current["date"])
             h1 = get_holdings(cik, current["acc"])
             h2 = get_holdings(cik, prev["acc"]) if prev else {}
             for cusip, val in h1.items():
@@ -522,6 +521,9 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
                                      "period": period})
             for cusip, val in h2.items():
                 prev_records[(cik, cusip)] = val
+
+        # 모든 선택 기관의 해당 분기 정보가 공개된 뒤를 공통 기준일로 사용한다.
+        period_date = max(filing_dates) if filing_dates else period
 
         tot = {}
         for r in curr_records:
@@ -550,9 +552,20 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
             tot[c]["shares"] += diff_s
             tot[c]["current_value"] += r["val"]
 
-        ranked = sorted(tot.items(), key=lambda x: (len(x[1]["funds"]), x[1]["inflow"]), reverse=True)[:int(top_n)]
-        resolved = [(c,d,resolve_ticker_advanced(c,d["name"])) for c,d in ranked]
-        tickers = list(dict.fromkeys([x[2] for x in resolved if x[2] != "-"]))
+        # 중요: 기관수/유입액으로 후보를 먼저 Top-N 절단하지 않는다.
+        # 전체 매수 후보를 SML universe로 만든 뒤 SML percentile을 계산한다.
+        resolved = [(c,d,resolve_ticker_advanced(c,d["name"])) for c,d in tot.items()]
+        resolved = [x for x in resolved if x[2] != "-"]
+        # 동일 Yahoo ticker가 중복되는 경우 첫 관측치만 사용
+        seen_tickers = set()
+        resolved_unique = []
+        for x in resolved:
+            if x[2] in seen_tickers:
+                continue
+            seen_tickers.add(x[2])
+            resolved_unique.append(x)
+        resolved = resolved_unique
+        tickers = list(dict.fromkeys([x[2] for x in resolved]))
         price_hist = {}
         start_dt = pd.Timestamp(period_date) - pd.Timedelta(days=430)
         end_dt = pd.Timestamp(period_date) + pd.Timedelta(days=220)
@@ -608,9 +621,15 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
             }
             rows.append(row)
 
-        scored = calc_score(pd.DataFrame(rows), market_neutral=market_neutral) if rows else pd.DataFrame()
+        raw = pd.DataFrame(rows)
+        required = ["Price_Val", "Rel_Return", "Return_3M", "Dist_52W", "CMF_10D"]
+        raw = raw.dropna(subset=required).copy()
+        raw = raw[raw["Price_Val"] > 0].copy()
+        scored = calc_score(raw, market_neutral=market_neutral) if not raw.empty else pd.DataFrame()
         if scored.empty:
             continue
+        # 해당 분기의 전체 유효 후보를 기준으로 SML 백분위를 확정한다.
+        scored["SML_Percentile"] = (scored["SML_Score"].rank(pct=True, method="average") * 100.0).round(1)
 
         for _, r in scored.iterrows():
             tk = r["Ticker"]
@@ -645,25 +664,55 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
     bt = pd.DataFrame(quarter_rows)
     if bt.empty:
         return bt, pd.DataFrame()
+    # 분위수별 성과를 계산한다. Top 1/5/10/15/20/30%를 동시에 비교해
+    # SML 순위가 높아질수록 미래성과가 좋아지는지 확인할 수 있다.
     summary_rows = []
+    quantiles = [1, 5, 10, 15, 20, 30]
     for fd in forward_days:
         col = f"Fwd_{fd}D"
         alpha_col = f"FwdAlpha_{fd}D"
-        vals = pd.to_numeric(bt[col], errors="coerce") if col in bt else pd.Series(dtype=float)
-        alphas = pd.to_numeric(bt[alpha_col], errors="coerce") if alpha_col in bt else pd.Series(dtype=float)
-        strong = bt[bt["SML_Percentile"] >= 95] if "SML_Percentile" in bt else bt.iloc[0:0]
-        top15 = bt[bt["SML_Percentile"] >= 85] if "SML_Percentile" in bt else bt.iloc[0:0]
-        svals = pd.to_numeric(strong[col], errors="coerce") if col in strong else pd.Series(dtype=float)
-        tvals = pd.to_numeric(top15[col], errors="coerce") if col in top15 else pd.Series(dtype=float)
+        for q in quantiles:
+            subset = bt[bt["SML_Percentile"] >= (100-q)]
+            vals = pd.to_numeric(subset[col], errors="coerce").dropna()
+            alphas = pd.to_numeric(subset[alpha_col], errors="coerce").dropna()
+            summary_rows.append({
+                "기간": f"{fd}D", "SML_상위": f"Top {q}%", "N": len(vals),
+                "평균수익률": vals.mean() if len(vals) else np.nan,
+                "중앙수익률": vals.median() if len(vals) else np.nan,
+                "승률": (vals > 0).mean() if len(vals) else np.nan,
+                "평균시장초과": alphas.mean() if len(alphas) else np.nan,
+                "표준편차": vals.std(ddof=1) if len(vals) > 1 else np.nan,
+            })
+        allv = pd.to_numeric(bt[col], errors="coerce").dropna()
+        alla = pd.to_numeric(bt[alpha_col], errors="coerce").dropna()
         summary_rows.append({
-            "기간": f"{fd}D",
-            "전체 평균수익률": vals.mean(),
-            "전체 중앙수익률": vals.median(),
-            "SML 상위5% 평균": svals.mean(),
-            "SML 상위15% 평균": tvals.mean(),
-            "상위5% 승률": (svals > 0).mean() if len(svals) else np.nan,
-            "전체 시장초과수익": alphas.mean(),
-            "상위5% 시장초과": pd.to_numeric(strong[alpha_col], errors="coerce").mean() if alpha_col in strong else np.nan
+            "기간": f"{fd}D", "SML_상위": "전체", "N": len(allv),
+            "평균수익률": allv.mean() if len(allv) else np.nan,
+            "중앙수익률": allv.median() if len(allv) else np.nan,
+            "승률": (allv > 0).mean() if len(allv) else np.nan,
+            "평균시장초과": alla.mean() if len(alla) else np.nan,
+            "표준편차": allv.std(ddof=1) if len(allv) > 1 else np.nan,
+        })
+
+        # 분기별 동일가중 Top10 - Bottom10 Long-Short
+        ls = []
+        lsa = []
+        for period in bt["period"].dropna().unique():
+            qdf = bt[bt["period"] == period]
+            top = pd.to_numeric(qdf[qdf["SML_Percentile"] >= 90][col], errors="coerce").dropna()
+            bot = pd.to_numeric(qdf[qdf["SML_Percentile"] <= 10][col], errors="coerce").dropna()
+            if len(top) and len(bot):
+                ls.append(top.mean() - bot.mean())
+                ta = pd.to_numeric(qdf[qdf["SML_Percentile"] >= 90][alpha_col], errors="coerce").dropna()
+                ba = pd.to_numeric(qdf[qdf["SML_Percentile"] <= 10][alpha_col], errors="coerce").dropna()
+                if len(ta) and len(ba): lsa.append(ta.mean() - ba.mean())
+        summary_rows.append({
+            "기간": f"{fd}D", "SML_상위": "Long Top10% - Short Bottom10%", "N": len(ls),
+            "평균수익률": np.mean(ls) if ls else np.nan,
+            "중앙수익률": np.median(ls) if ls else np.nan,
+            "승률": np.mean(np.array(ls) > 0) if ls else np.nan,
+            "평균시장초과": np.mean(lsa) if lsa else np.nan,
+            "표준편차": np.std(ls, ddof=1) if len(ls) > 1 else np.nan,
         })
     return bt, pd.DataFrame(summary_rows)
 
@@ -1291,31 +1340,26 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
 st.divider()
 st.subheader("📊 SML 2.0 워크포워드 백테스트")
 st.caption(
-    "과거 13F 공시 시점에서 당시 공개된 정보만으로 SML을 계산한 뒤, 이후 실제 주가 성과를 검증합니다. "
-    "현재 점수의 사후적 성과가 아니라 '그때 이 종목을 골랐다면?'을 재현하는 방식입니다."
+    "기관수/유입액으로 후보를 먼저 잘라내지 않습니다. 각 분기의 전체 13F 매수 후보에서 SML을 계산하고, "
+    "모든 선택 기관의 정보가 공개된 공통 기준일 다음 거래일부터 21/63/126 거래일 성과를 측정합니다."
 )
 
-bt_c1, bt_c2, bt_c3, bt_c4 = st.columns([1, 1, 1, 1.3])
+bt_c1, bt_c2, bt_c3 = st.columns([1, 1, 1.3])
 with bt_c1:
     bt_quarters = st.slider("백테스트 분기 수", min_value=2, max_value=8, value=4, step=1)
 with bt_c2:
-    bt_top_n = st.slider("분기별 후보 종목 수", min_value=50, max_value=300, value=100, step=25)
+    bt_market_neutral = st.checkbox("SPY 대비 상대수익률 적용", value=True, key="bt_market_neutral")
 with bt_c3:
-    bt_market_neutral = st.checkbox("SPY 대비 초과수익 사용", value=True, key="bt_market_neutral")
-with bt_c4:
     bt_run = st.button("🧪 백테스트 실행", type="primary", key="run_backtest")
 
 if bt_run:
     if not funds_to_analyze:
         st.error("백테스트할 기관을 최소 1개 이상 선택하세요.")
     else:
-        with st.spinner(
-            f"과거 {bt_quarters}개 분기의 13F → 가격데이터 → SML → 미래수익률을 순차적으로 계산 중입니다..."
-        ):
+        with st.spinner(f"과거 {bt_quarters}개 분기의 전체 후보를 SML로 평가하고 미래성과를 계산 중입니다..."):
             bt_detail, bt_summary = run_walk_forward_backtest(
                 funds_to_analyze,
                 n_quarters=bt_quarters,
-                top_n=bt_top_n,
                 market_neutral=bt_market_neutral,
                 forward_days=(21, 63, 126)
             )
@@ -1325,67 +1369,52 @@ if bt_run:
 if "backtest_summary" in st.session_state:
     bt_summary = st.session_state["backtest_summary"]
     bt_detail = st.session_state.get("backtest_detail", pd.DataFrame())
-
     if bt_summary.empty or bt_detail.empty:
         st.warning("백테스트 결과가 없습니다. SEC 공시 또는 과거 시세 데이터를 확인하세요.")
     else:
-        st.markdown("### ① 성과 요약")
-        show_summary = bt_summary.copy()
-        for c in ["전체 평균수익률", "전체 중앙수익률", "SML 상위5% 평균", "SML 상위15% 평균", "전체 시장초과수익", "상위5% 시장초과"]:
-            if c in show_summary.columns:
-                show_summary[c] = pd.to_numeric(show_summary[c], errors="coerce").round(2)
-        if "상위5% 승률" in show_summary.columns:
-            show_summary["상위5% 승률"] = (pd.to_numeric(show_summary["상위5% 승률"], errors="coerce") * 100).round(1)
-        st.dataframe(
-            show_summary,
-            use_container_width=True,
-            hide_index=True,
+        st.markdown("### ① SML 분위수별 성과")
+        show = bt_summary.copy()
+        for c in ["평균수익률", "중앙수익률", "평균시장초과", "표준편차"]:
+            show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
+        show["승률"] = (pd.to_numeric(show["승률"], errors="coerce") * 100).round(1)
+        st.dataframe(show, use_container_width=True, hide_index=True,
             column_config={
-                "전체 평균수익률": st.column_config.NumberColumn(format="%+.2f%%"),
-                "전체 중앙수익률": st.column_config.NumberColumn(format="%+.2f%%"),
-                "SML 상위5% 평균": st.column_config.NumberColumn(format="%+.2f%%"),
-                "SML 상위15% 평균": st.column_config.NumberColumn(format="%+.2f%%"),
-                "상위5% 승률": st.column_config.NumberColumn(format="%.1f%%"),
-                "전체 시장초과수익": st.column_config.NumberColumn(format="%+.2f%%"),
-                "상위5% 시장초과": st.column_config.NumberColumn(format="%+.2f%%"),
-            }
+                "평균수익률": st.column_config.NumberColumn(format="%+.2f%%"),
+                "중앙수익률": st.column_config.NumberColumn(format="%+.2f%%"),
+                "승률": st.column_config.NumberColumn(format="%.1f%%"),
+                "평균시장초과": st.column_config.NumberColumn(format="%+.2f%%"),
+                "표준편차": st.column_config.NumberColumn(format="%.2f%%"),
+            })
+
+        st.markdown("### ② 핵심 검증")
+        six = bt_summary[bt_summary["기간"] == "126D"]
+        top5 = six[six["SML_상위"] == "Top 5%"]
+        top15 = six[six["SML_상위"] == "Top 15%"]
+        ls6 = six[six["SML_상위"] == "Long Top10% - Short Bottom10%"]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Top 5% 6개월 평균", f"{top5.iloc[0]['평균수익률']:+.2f}%" if not top5.empty else "N/A")
+        c2.metric("Top 15% 6개월 평균", f"{top15.iloc[0]['평균수익률']:+.2f}%" if not top15.empty else "N/A")
+        c3.metric("Top 5% 승률", f"{top5.iloc[0]['승률']*100:.1f}%" if not top5.empty else "N/A")
+        c4.metric("Top10 - Bottom10", f"{ls6.iloc[0]['평균수익률']:+.2f}%" if not ls6.empty else "N/A")
+        st.info(
+            "좋은 SML이라면 Top 1% → 5% → 10% → 15% → 20% → 30%로 갈수록 미래수익률이 대체로 높아지고, "
+            "동시에 Top10% - Bottom10% Long-Short가 반복적으로 양수여야 합니다."
         )
 
-        # 가장 중요한 검증 포인트: SML 상위군이 실제로 미래수익률을 개선시키는지
-        st.markdown("### ② 핵심 검증")
-        latest_126 = bt_summary[bt_summary["기간"] == "126D"]
-        if not latest_126.empty:
-            x = latest_126.iloc[0]
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("상위 5% 6개월 평균", f"{x['SML 상위5% 평균']:+.2f}%")
-            c2.metric("상위 15% 6개월 평균", f"{x['SML 상위15% 평균']:+.2f}%")
-            c3.metric("상위 5% 승률", f"{x['상위5% 승률']*100:.1f}%")
-            c4.metric("상위 5% 시장초과", f"{x['상위5% 시장초과']:+.2f}%")
-
-        # 분기별로 실제 어떤 종목이 선택되었는지 확인
-        st.markdown("### ③ 백테스트 개별 관측치")
-        bt_view_cols = [
-            "period", "Filing_Date", "Ticker", "Name", "Fund_Count", "Inflow_M",
-            "SML_Score", "SML_Percentile", "Inst_Score", "Lag_Score",
-            "Accumulation_Score", "Fwd_21D", "Fwd_63D", "Fwd_126D",
-            "FwdAlpha_21D", "FwdAlpha_63D", "FwdAlpha_126D"
-        ]
-        bt_view_cols = [c for c in bt_view_cols if c in bt_detail.columns]
-        bt_view = bt_detail[bt_view_cols].copy()
-        bt_view = bt_view.sort_values(["period", "SML_Score"], ascending=[False, False])
-        rename_bt = {
-            "period": "보고분기", "Filing_Date": "공시일", "Ticker": "티커", "Name": "기업명",
-            "Fund_Count": "기관수", "Inflow_M": "추정유입($M)", "SML_Score": "SML점수",
-            "SML_Percentile": "SML백분위", "Inst_Score": "수급점수", "Lag_Score": "소외도",
-            "Accumulation_Score": "매집점수", "Fwd_21D": "21D수익률", "Fwd_63D": "63D수익률",
-            "Fwd_126D": "126D수익률", "FwdAlpha_21D": "21D초과수익", "FwdAlpha_63D": "63D초과수익",
-            "FwdAlpha_126D": "126D초과수익"
-        }
-        bt_view = bt_view.rename(columns=rename_bt)
-        st.dataframe(
-            bt_view,
-            use_container_width=True,
-            hide_index=True,
+        st.markdown("### ③ 개별 관측치")
+        cols = ["period", "Filing_Date", "Ticker", "Name", "Fund_Count", "Inflow_M", "SML_Score",
+                "SML_Percentile", "Inst_Score", "Lag_Score", "Accumulation_Score", "Fwd_21D",
+                "Fwd_63D", "Fwd_126D", "FwdAlpha_21D", "FwdAlpha_63D", "FwdAlpha_126D"]
+        cols = [c for c in cols if c in bt_detail.columns]
+        view = bt_detail[cols].sort_values(["period", "SML_Score"], ascending=[False, False]).copy()
+        view = view.rename(columns={
+            "period":"보고분기", "Filing_Date":"공통정보일", "Ticker":"티커", "Name":"기업명",
+            "Fund_Count":"기관수", "Inflow_M":"추정유입($M)", "SML_Score":"SML점수",
+            "SML_Percentile":"SML백분위", "Inst_Score":"수급점수", "Lag_Score":"소외도",
+            "Accumulation_Score":"매집점수", "Fwd_21D":"21D수익률", "Fwd_63D":"63D수익률",
+            "Fwd_126D":"126D수익률", "FwdAlpha_21D":"21D초과수익", "FwdAlpha_63D":"63D초과수익",
+            "FwdAlpha_126D":"126D초과수익"})
+        st.dataframe(view, use_container_width=True, hide_index=True,
             column_config={
                 "추정유입($M)": st.column_config.NumberColumn(format="$%.1f M"),
                 "SML점수": st.column_config.NumberColumn(format="%.1f"),
@@ -1398,22 +1427,14 @@ if "backtest_summary" in st.session_state:
                 "126D수익률": st.column_config.NumberColumn(format="%+.2f%%"),
                 "21D초과수익": st.column_config.NumberColumn(format="%+.2f%%"),
                 "63D초과수익": st.column_config.NumberColumn(format="%+.2f%%"),
-                "126D초과수익": st.column_config.NumberColumn(format="%+.2f%%"),
-            }
-        )
-
-        st.markdown("### ④ 해석 가이드")
+                "126D초과수익": st.column_config.NumberColumn(format="%+.2f%%")})
+        st.markdown("### ④ 백테스트 해석")
         st.info(
-            "이 백테스트에서 가장 중요한 것은 단순 평균수익률보다 **SML 상위 5%가 상위 15%/전체보다 일관되게 높은지**, "
-            "그리고 **SPY 대비 초과수익이 양수인지**입니다. 또한 분기별 표에서 특정 종목이나 한 분기에 의해 결과가 왜곡되는지도 확인해야 합니다. "
-            "현재 결과는 전략의 유효성을 증명하는 것이 아니라, 다음 단계인 가중치·임계값 최적화를 위한 검증 데이터입니다."
+            "이번 버전은 기존의 '기관수/유입액 Top N → 그 안에서 SML' 구조를 제거했습니다. "
+            "따라서 이제 분위수별 성과는 SML 순위 자체의 정보력을 검증하는 결과입니다. "
+            "다만 현재는 짧은 표본을 빠르게 검증하는 단계이므로, 유효성이 확인되면 더 긴 기간의 walk-forward와 out-of-sample 최적화를 진행하는 것이 좋습니다."
         )
-
         csv = bt_detail.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "⬇️ 전체 백테스트 결과 CSV 다운로드",
-            data=csv,
-            file_name="sml_walk_forward_backtest.csv",
-            mime="text/csv",
-            key="download_bt_csv"
-        )
+        st.download_button("⬇️ 전체 백테스트 결과 CSV 다운로드", data=csv,
+                           file_name="sml_walk_forward_backtest_full_universe.csv", mime="text/csv", key="download_bt_csv")
+

@@ -145,7 +145,7 @@ def calc_next_filing_deadline(latest_date_str):
     days_left = (next_dl - today).days
     return dt.strftime("%Y-%m-%d"), next_dl.strftime("%Y-%m-%d"), days_left
 
-@st.cache_data(ttl=43200)
+@st.cache_data(persist=True, show_spinner=False)
 def get_filings(cik, limit=2):
     time.sleep(0.12)
     url = f"https://data.sec.gov/submissions/CIK{str(cik).zfill(10)}.json"
@@ -175,7 +175,7 @@ def get_filings(cik, limit=2):
     except Exception:
         return []
 
-@st.cache_data(ttl=43200)
+@st.cache_data(persist=True, show_spinner=False)
 def get_holdings(cik, acc):
     time.sleep(0.12)
     acc_clean = acc.replace("-", "")
@@ -408,10 +408,20 @@ def download_spy_history(start=None, end=None, period=None):
     except Exception:
         return pd.DataFrame()
 
+@st.cache_data(persist=True, show_spinner=False)
+def download_backtest_price_history(tickers, start, end):
+    """백테스트 전용 영구 캐시. 동일 과거 구간은 앱을 재실행해도 재다운로드하지 않는다."""
+    return download_price_history(tickers, start=start, end=end)
+
+@st.cache_data(persist=True, show_spinner=False)
+def download_backtest_spy_history(start, end):
+    """백테스트 SPY 과거 시세 영구 캐시."""
+    return download_spy_history(start=start, end=end)
+
 # ============================================================
 # Historical walk-forward backtest engine
 # ============================================================
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(persist=True, show_spinner=False)
 def load_historical_filings(cik, n_quarters=6):
     """최근 N개 분기의 13F를 가져온다. 동일 report period의 중복 제출은 제거."""
     return get_filings(cik, limit=max(int(n_quarters) + 2, 4))[:int(n_quarters)]
@@ -588,16 +598,19 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
         resolved = resolved_unique
         tickers = list(dict.fromkeys([x[2] for x in resolved]))
         start_dt = pd.Timestamp(period_date) - pd.Timedelta(days=430)
-        end_dt = pd.Timestamp(period_date) + pd.Timedelta(days=220)
+        end_dt = pd.Timestamp(period_date) + pd.Timedelta(days=320)
         _status(f"📈 **[4/5 시세 다운로드]** {period} 유효 티커 {len(tickers):,}개 + SPY 과거 시세를 조회하는 중")
         _progress(52)
-        price_hist = download_price_history(
+        price_hist = download_backtest_price_history(
             tickers, start=start_dt.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d")
         )
-        spy = download_spy_history(
+        spy = download_backtest_spy_history(
             start=start_dt.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d")
         )
 
+        # CMF는 반드시 공통 정보일(period_date) 직전 거래일까지의 10거래일로 계산한다.
+        # period_date는 해당 분기의 선택 기관 중 가장 늦게 공개된 13F filing date이므로,
+        # 이 날짜 이전의 시장 데이터만 사용하면 백테스트 시점의 look-ahead를 차단할 수 있다.
         spy_feat = _hist_features(spy, period_date)
         rows = []
         for c,d,tk in resolved:
@@ -620,7 +633,11 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
                 "Return_3M": feat["Return_3M"], "Market_Return_6M": market_6,
                 "Market_Return_3M": market_3, "Dist_52W": feat["Dist_52W"],
                 "CMF_10D": feat["CMF_10D"], "Price_Val": feat["Price_Val"],
-                "Filing_Date": d["f_date"], "period": period,
+                # 개별 기관의 filing date와 별도로, 실제 SML 신호를 확정할 수 있는
+                # 공통 정보 기준일을 저장한다. CMF 역시 이 날짜 직전 10거래일 기준이다.
+                "Filing_Date": d["f_date"], "Signal_AsOf_Date": period_date, "CMF_AsOf_Date": period_date,
+                "CMF_Status": "PASS" if pd.notna(feat["CMF_10D"]) and feat["CMF_10D"] >= 0 else "FAIL",
+                "period": period,
                 "details": []
             }
             rows.append(row)
@@ -1418,7 +1435,7 @@ st.caption(
 
 bt_c1, bt_c2, bt_c3 = st.columns([1, 1, 1.3])
 with bt_c1:
-    bt_quarters = st.slider("백테스트 분기 수", min_value=2, max_value=8, value=4, step=1)
+    bt_quarters = st.slider("백테스트 분기 수", min_value=2, max_value=12, value=8, step=1)
 with bt_c2:
     bt_market_neutral = st.checkbox("SPY 대비 상대수익률 적용", value=True, key="bt_market_neutral")
 with bt_c3:
@@ -1464,7 +1481,53 @@ if "backtest_summary" in st.session_state:
                 "표준편차": st.column_config.NumberColumn(format="%.2f%%"),
             })
 
-        st.markdown("### ② 핵심 검증")
+        st.markdown("### ② CMF PASS만 적용했을 때의 백테스트")
+        st.caption(
+            "CMF(10D)는 각 분기의 **공통 정보 기준일(Signal As-Of Date) 직전 10거래일**로 계산합니다. "
+            "즉 공시 이후의 가격·거래량은 CMF 판정에 절대 사용하지 않습니다. "
+            "CMF PASS 종목만 남긴 뒤 원래 SML 백분위를 유지하여, CMF 필터의 추가 효과를 검증합니다."
+        )
+        cmf_detail = bt_detail[
+            (bt_detail.get("CMF_Status", "FAIL") == "PASS")
+        ].copy() if "CMF_Status" in bt_detail.columns else pd.DataFrame()
+        if cmf_detail.empty:
+            st.warning("CMF PASS 조건을 만족하면서 미래수익률까지 계산 가능한 관측치가 없습니다.")
+        else:
+            cmf_rows = []
+            for fd in [21, 63, 126]:
+                col = f"Fwd_{fd}D"
+                alpha_col = f"FwdAlpha_{fd}D"
+                for label, mask in [
+                    ("CMF PASS 전체", pd.Series(True, index=cmf_detail.index)),
+                    ("CMF PASS + SML Top 20%", cmf_detail["SML_Percentile"] >= 80),
+                    ("CMF PASS + SML Top 10%", cmf_detail["SML_Percentile"] >= 90),
+                    ("CMF PASS + SML Top 5%", cmf_detail["SML_Percentile"] >= 95),
+                ]:
+                    sub = cmf_detail[mask]
+                    vals = pd.to_numeric(sub[col], errors="coerce").dropna()
+                    alphas = pd.to_numeric(sub[alpha_col], errors="coerce").dropna()
+                    cmf_rows.append({
+                        "기간": f"{fd}D", "기준": label, "N": len(vals),
+                        "평균수익률": vals.mean() if len(vals) else np.nan,
+                        "중앙수익률": vals.median() if len(vals) else np.nan,
+                        "승률": (vals > 0).mean() if len(vals) else np.nan,
+                        "평균시장초과": alphas.mean() if len(alphas) else np.nan,
+                    })
+            cmf_show = pd.DataFrame(cmf_rows)
+            st.dataframe(
+                cmf_show,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "평균수익률": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "중앙수익률": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "승률": st.column_config.NumberColumn(format="%.1f%%"),
+                    "평균시장초과": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "N": st.column_config.NumberColumn(format="%d"),
+                }
+            )
+
+        st.markdown("### ③ 핵심 검증")
 
         # 126D는 최근 분기의 경우 아직 미래 데이터가 충분하지 않을 수 있다.
         # 따라서 NaN을 그대로 표시하지 않고, 유효 관측치가 가장 많은 장기 구간을 우선 사용한다.
@@ -1507,7 +1570,7 @@ if "backtest_summary" in st.session_state:
             "각 기간의 N은 실제로 미래수익률이 계산 가능한 유효 표본 수입니다."
         )
 
-        st.markdown("### ③ 개별 관측치")
+        st.markdown("### ④ 개별 관측치")
         cols = ["period", "Filing_Date", "Ticker", "Name", "Fund_Count", "Inflow_M", "SML_Score",
                 "SML_Percentile", "Inst_Score", "Lag_Score", "Accumulation_Score", "Fwd_21D",
                 "Fwd_63D", "Fwd_126D", "FwdAlpha_21D", "FwdAlpha_63D", "FwdAlpha_126D"]
@@ -1534,7 +1597,7 @@ if "backtest_summary" in st.session_state:
                 "21D초과수익": st.column_config.NumberColumn(format="%+.2f%%"),
                 "63D초과수익": st.column_config.NumberColumn(format="%+.2f%%"),
                 "126D초과수익": st.column_config.NumberColumn(format="%+.2f%%")})
-        st.markdown("### ④ 백테스트 해석")
+        st.markdown("### ⑤ 백테스트 해석")
         st.info(
             "이번 버전은 기존의 '기관수/유입액 Top N → 그 안에서 SML' 구조를 제거했습니다. "
             "따라서 이제 분위수별 성과는 SML 순위 자체의 정보력을 검증하는 결과입니다. "

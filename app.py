@@ -19,65 +19,9 @@ st.set_page_config(
 USER_AGENT = "QuantStreamlitApp quant_analyst@quantfirm.org"
 HEADERS = {"User-Agent": USER_AGENT}
 
-DEFAULT_FUNDS = {
-    # 1. 퀀트 & 멀티스트래티지 헤지펀드
-    "시타델 (Citadel Advisors)": "0001423053",
-    "르네상스 테크놀로지 (Renaissance Tech)": "0001037389",
-    "밀레니엄 매니지먼트 (Millennium Mgmt)": "0001273087",
-    "투 시그마 (Two Sigma Investments)": "0001179392",
-    "D.E. 쇼 (D.E. Shaw & Co.)": "0001009207",
-    "포인트72 (Point72 / Steve Cohen)": "0001603466",
-    "AQR 캐피탈 (AQR Capital Mgmt)": "0001167557",
-    "브릿지워터 (Bridgewater Associates)": "0001350694",
-    "발리아스니 (Balyasny Asset Mgmt)": "0001262279",
-    "엑소더스포인트 (ExodusPoint Capital)": "0001744489",
-    
-    # 2. 전설적 투자자 & 행동주의 / 롱숏 헤지펀드
-    "버크셔 해서웨이 (Berkshire Hathaway)": "0001067983",
-    "타이거 글로벌 (Tiger Global)": "0001167483",
-    "코튜 매니지먼트 (Coatue / Philippe Laffont)": "0001422183",
-    "바이킹 글로벌 (Viking Global / Halvorsen)": "0001103804",
-    "퍼싱 스퀘어 (Pershing Square / Ackman)": "0001336528",
-    "아팔루사 (Appaloosa / David Tepper)": "0001006438",
-    "듀케인 패밀리오피스 (Duquesne / Druckenmiller)": "0001536411",
-    "소로스 펀드 (Soros Fund Management)": "0001029160",
-    "서드 포인트 (Third Point / Dan Loeb)": "0001040273",
-    "그린라이트 캐피탈 (Greenlight / David Einhorn)": "0001079114",
-    "바우포스트 그룹 (Baupost / Seth Klarman)": "0001061768",
-    "론 파인 캐피탈 (Lone Pine / Steve Mandel)": "0001061165",
-    "아크 인베스트 (ARK Invest / Cathie Wood)": "0001697748",
-    "엘리엇 매니지먼트 (Elliott Investment Mgmt)": "0001048445",
-    "스타보드 밸류 (Starboard Value)": "0001513824",
-    "아이칸 엔터프라이즈 (Carl Icahn)": "0000921669",
-    "페어홀름 (Fairholme Capital / Berkowitz)": "0001111565",
-    "세스콰하나 (Susquehanna International)": "0001446194",
-    "제인 스트리트 (Jane Street Group)": "0001599947",
-    "위즈덤트리 (WisdomTree Inc)": "0001350487",
+DEFAULT_FUNDS = {"시타델 (Citadel Advisors)": "0001423053", "르네상스 테크놀로지 (Renaissance Tech)": "0001037389", "밀레니엄 매니지먼트 (Millennium Mgmt)": "0001273087", "투 시그마 (Two Sigma Investments)": "0001179392", "D.E. 쇼 (D.E. Shaw & Co.)": "0001009207", "포인트72 (Point72 / Steve Cohen)": "0001603466", "AQR 캐피탈 (AQR Capital Mgmt)": "0001167557", "브릿지워터 (Bridgewater Associates)": "0001350694", "발리아스니 (Balyasny Asset Mgmt)": "0001262279", "엑소더스포인트 (ExodusPoint Capital)": "0001744489", "버크셔 해서웨이 (Berkshire Hathaway)": "0001067983", "타이거 글로벌 (Tiger Global)": "0001167483", "코튜 매니지먼트 (Coatue / Philippe Laffont)": "0001422183", "바이킹 글로벌 (Viking Global / Halvorsen)": "0001103804", "퍼싱 스퀘어 (Pershing Square / Ackman)": "0001336528", "아팔루사 (Appaloosa / David Tepper)": "0001006438", "듀케인 패밀리오피스 (Duquesne / Druckenmiller)": "0001536411", "소로스 펀드 (Soros Fund Management)": "0001029160", "서드 포인트 (Third Point / Dan Loeb)": "0001040273", "그린라이트 캐피탈 (Greenlight / David Einhorn)": "0001079114", "바우포스트 그룹 (Baupost / Seth Klarman)": "0001061768", "론 파인 캐피탈 (Lone Pine / Steve Mandel)": "0001061165", "아크 인베스트 (ARK Invest / Cathie Wood)": "0001697748", "엘리엇 매니지먼트 (Elliott Investment Mgmt)": "0001048445", "스타보드 밸류 (Starboard Value)": "0001513824", "아이칸 엔터프라이즈 (Carl Icahn)": "0000921669", "페어홀름 (Fairholme Capital / Berkowitz)": "0001111565", "세스콰하나 (Susquehanna International)": "0001446194", "블랙록 (BlackRock Fund Advisors)": "0001364742", "뱅가드 그룹 (Vanguard Group)": "0000102909", "피델리티 (FMR LLC)": "0000315066", "스테이트 스트리트 (State Street Corp)": "0000093751", "웰링턴 매니지먼트 (Wellington Management)": "0000902219", "T. 로우 프라이스 (T. Rowe Price)": "0000080255", "캐피탈 리서치 (Capital Research Global)": "0001423052", "베일리 기포드 (Baillie Gifford & Co)": "0001088875", "인베스코 (Invesco Ltd.)": "0000914208", "노던 트러스트 (Northern Trust Corp)": "0000073124", "프랭클린 리소시스 (Franklin Resources)": "0000038777", "얼라이언스 번스틴 (AllianceBernstein)": "0001109448", "JP모건 체이스 (JPMorgan Chase & Co)": "0000019617", "골드만 삭스 (Goldman Sachs Group)": "0000886982", "모건 스탠리 (Morgan Stanley)": "0000895421", "뱅크 오브 아메리카 (Bank of America)": "0000070858", "시티그룹 (Citigroup Inc)": "0000831001", "웰스 파고 (Wells Fargo & Co)": "0000072971", "UBS 그룹 (UBS Group AG)": "0001610520", "노르웨이 국부펀드 (Norges Bank)": "0001270787", "Dodge & Cox (Dodge & Cox)": "0000200217", "아티산 파트너스 (Artisan Partners)": "0001466153"}
 
-    # 3. 글로벌 초대형 자산운용사
-    "블랙록 (BlackRock Fund Advisors)": "0001364742",
-    "뱅가드 그룹 (Vanguard Group)": "0000102909",
-    "피델리티 (FMR LLC)": "0000315066",
-    "스테이트 스트리트 (State Street Corp)": "0000093751",
-    "웰링턴 매니지먼트 (Wellington Management)": "0000902219",
-    "T. 로우 프라이스 (T. Rowe Price)": "0000080255",
-    "캐피탈 리서치 (Capital Research Global)": "0001423052",
-    "베일리 기포드 (Baillie Gifford & Co)": "0001088875",
-    "인베스코 (Invesco Ltd.)": "0000914208",
-    "노던 트러스트 (Northern Trust Corp)": "0000073124",
-    "프랭클린 리소시스 (Franklin Resources)": "0000038777",
-    "얼라이언스 번스틴 (AllianceBernstein)": "0001109448",
-
-    # 4. 글로벌 대형 IB 및 국부펀드
-    "JP모건 체이스 (JPMorgan Chase & Co)": "0000019617",
-    "골드만 삭스 (Goldman Sachs Group)": "0000886982",
-    "모건 스탠리 (Morgan Stanley)": "0000895421",
-    "뱅크 오브 아메리카 (Bank of America)": "0000070858",
-    "시티그룹 (Citigroup Inc)": "0000831001",
-    "웰스 파고 (Wells Fargo & Co)": "0000072971",
-    "UBS 그룹 (UBS Group AG)": "0001610520",
-    "노르웨이 국부펀드 (Norges Bank)": "0001270787"
-}
+EXTENDED_FUNDS = {"시타델 (Citadel Advisors)": "0001423053", "르네상스 테크놀로지 (Renaissance Tech)": "0001037389", "밀레니엄 매니지먼트 (Millennium Mgmt)": "0001273087", "투 시그마 (Two Sigma Investments)": "0001179392", "D.E. 쇼 (D.E. Shaw & Co.)": "0001009207", "포인트72 (Point72 / Steve Cohen)": "0001603466", "AQR 캐피탈 (AQR Capital Mgmt)": "0001167557", "브릿지워터 (Bridgewater Associates)": "0001350694", "발리아스니 (Balyasny Asset Mgmt)": "0001262279", "엑소더스포인트 (ExodusPoint Capital)": "0001744489", "버크셔 해서웨이 (Berkshire Hathaway)": "0001067983", "타이거 글로벌 (Tiger Global)": "0001167483", "코튜 매니지먼트 (Coatue / Philippe Laffont)": "0001422183", "바이킹 글로벌 (Viking Global / Halvorsen)": "0001103804", "퍼싱 스퀘어 (Pershing Square / Ackman)": "0001336528", "아팔루사 (Appaloosa / David Tepper)": "0001006438", "듀케인 패밀리오피스 (Duquesne / Druckenmiller)": "0001536411", "소로스 펀드 (Soros Fund Management)": "0001029160", "서드 포인트 (Third Point / Dan Loeb)": "0001040273", "그린라이트 캐피탈 (Greenlight / David Einhorn)": "0001079114", "바우포스트 그룹 (Baupost / Seth Klarman)": "0001061768", "론 파인 캐피탈 (Lone Pine / Steve Mandel)": "0001061165", "아크 인베스트 (ARK Invest / Cathie Wood)": "0001697748", "엘리엇 매니지먼트 (Elliott Investment Mgmt)": "0001048445", "스타보드 밸류 (Starboard Value)": "0001513824", "아이칸 엔터프라이즈 (Carl Icahn)": "0000921669", "페어홀름 (Fairholme Capital / Berkowitz)": "0001111565", "세스콰하나 (Susquehanna International)": "0001446194", "블랙록 (BlackRock Fund Advisors)": "0001364742", "뱅가드 그룹 (Vanguard Group)": "0000102909", "피델리티 (FMR LLC)": "0000315066", "스테이트 스트리트 (State Street Corp)": "0000093751", "웰링턴 매니지먼트 (Wellington Management)": "0000902219", "T. 로우 프라이스 (T. Rowe Price)": "0000080255", "캐피탈 리서치 (Capital Research Global)": "0001423052", "베일리 기포드 (Baillie Gifford & Co)": "0001088875", "인베스코 (Invesco Ltd.)": "0000914208", "노던 트러스트 (Northern Trust Corp)": "0000073124", "프랭클린 리소시스 (Franklin Resources)": "0000038777", "얼라이언스 번스틴 (AllianceBernstein)": "0001109448", "JP모건 체이스 (JPMorgan Chase & Co)": "0000019617", "골드만 삭스 (Goldman Sachs Group)": "0000886982", "모건 스탠리 (Morgan Stanley)": "0000895421", "뱅크 오브 아메리카 (Bank of America)": "0000070858", "시티그룹 (Citigroup Inc)": "0000831001", "웰스 파고 (Wells Fargo & Co)": "0000072971", "UBS 그룹 (UBS Group AG)": "0001610520", "노르웨이 국부펀드 (Norges Bank)": "0001270787", "Dodge & Cox (Dodge & Cox)": "0000200217", "아티산 파트너스 (Artisan Partners)": "0001466153", "데이비스 셀렉티드 (Davis Selected Advisers)": "0001036325", "뉴버거 버먼 (Neuberger Berman)": "0001465109", "폴렌 캐피탈 (Polen Capital)": "0001034524", "파르나서스 인베스트먼트 (Parnassus)": "0000948669", "블랙스톤 (Blackstone)": "0001393818", "TIAA CREF Investment Management": "0000887793", "트라이언 펀드 (Trian Partners)": "0001345471", "글렌뷰 캐피탈 (Glenview Capital)": "0001138995", "코벡스 매니지먼트 (Corvex)": "0001535472", "파라론 캐피탈 (Farallon Capital)": "0000909661", "에미넌스 캐피탈 (Eminence Capital)": "0001107310", "매버릭 캐피탈 (Maverick Capital)": "0000934639", "JANA Partners": "0001998597", "Dragoneer Investment Group": "0001602189", "D1 Capital Partners": "0001747057", "Himalaya Capital Management": "0001709323", "HHLR Advisors (Hillhouse)": "0001762304", "제인 스트리트 (Jane Street Group)": "0001599947", "위즈덤트리 (WisdomTree Inc)": "0001350487", "ValueAct Capital": "0001104659", "KKR & Co.": "0001404912", "Apollo Global Management": "0001411494", "Carlyle Group": "0001527166", "Ares Management": "0001482430", "Oaktree Capital Management": "0000948484", "Verde Partners": "0001534505", "Cooper Investors": "0001051003", "Ensign Peak Advisors": "0001589029", "GEODE Capital Management": "0001052871", "Dimensional Fund Advisors": "0000354204", "Janus Henderson Investors": "0001270511", "Lazard Asset Management": "0001059556", "MFS Investment Management": "0001166559", "Federated Hermes": "0001056288", "Nuveen Asset Management": "0000809417", "Columbia Threadneedle Investments": "0001072950", "First Eagle Investment Management": "0001073753", "Jennison Associates": "0000822478", "American Century Investment Services": "0000783412", "Victory Capital Management": "0001593604", "RBC Global Asset Management": "0000907404", "PIMCO": "0001099248", "Franklin Advisory Services": "0000916540", "Legg Mason": "0000703636", "Hotchkis & Wiley Capital Management": "0000880774", "Causeway Capital Management": "0001051659", "Davis Selected Advisers (duplicate check)": "0001036325", "Sands Capital Management": "0000927240", "RWC Asset Management": "0001544538", "Pzena Investment Management": "0001031888"}
 
 COMMON_CUSIP_MAP = {
     "G7945M107": "STX", "H7945M107": "STX", "81180R107": "STX",
@@ -782,7 +726,7 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
 
 # --- UI 레이아웃 ---
 st.title("🎯 SEC 13F SML 레이더 v2.0")
-st.caption("13F 스마트머니 수급 × 가격 소외 × 시장상대수익률 | 실시간 데이터 수집은 실행 버튼을 누를 때만 시작")
+st.caption("13F 스마트머니 수급 × 가격 소외 × 시장상대수익률 | Core 50 / Extended 100 고정 Universe 지원 | 실시간 데이터는 실행 시에만 수집")
 
 with st.expander("📖 SML 2.0 모델·데이터·시그널 가이드 (필독)", expanded=False):
     st.markdown(
@@ -838,21 +782,43 @@ with st.expander("📖 SML 2.0 모델·데이터·시그널 가이드 (필독)",
 if "custom_funds" not in st.session_state:
     st.session_state["custom_funds"] = dict(DEFAULT_FUNDS)
 
-with st.expander(f"🏛️ 분석 대상 기관 관리 (총 {len(st.session_state['custom_funds'])}개 기관 등록됨)", expanded=False):
-    col_btn1, col_btn2 = st.columns([1, 1])
-    with col_btn1:
-        if st.button("전체 선택"):
-            st.session_state["sel_funds"] = list(st.session_state["custom_funds"].keys())
-    with col_btn2:
-        if st.button("전체 해제"):
-            st.session_state["sel_funds"] = []
-
-    default_selected = st.session_state.get("sel_funds", list(st.session_state["custom_funds"].keys()))
-    selected_fund_names = st.multiselect(
-        "분석할 기관들을 선택하세요:",
-        options=list(st.session_state["custom_funds"].keys()),
-        default=default_selected
+with st.expander("🏛️ 분석 대상 기관 Universe", expanded=False):
+    st.caption(
+        "기관 수를 임의로 섞지 않고, 사전 정의된 50개 Core와 100개 Extended Universe 중 하나를 기계적으로 선택합니다. "
+        "Core는 대형 패시브 운용사를 과도하게 넣지 않고 헤지펀드·액티비스트·집중형 액티브 운용사를 중심으로 구성했으며, "
+        "Extended는 여기에 추가 액티비스트·글로벌 액티브·대형 운용사를 더해 표본을 넓힙니다."
     )
+    universe_mode = st.radio(
+        "분석 Universe",
+        ["Core 50", "Extended 100", "사용자 지정"],
+        horizontal=True,
+        index=0,
+        key="universe_mode"
+    )
+
+    if universe_mode == "Core 50":
+        active_universe = dict(DEFAULT_FUNDS)
+        selected_fund_names = list(active_universe.keys())
+        st.success(f"Core Universe: {len(active_universe)}개 기관이 자동 선택되었습니다.")
+    elif universe_mode == "Extended 100":
+        active_universe = dict(EXTENDED_FUNDS)
+        selected_fund_names = list(active_universe.keys())
+        st.info(f"Extended Universe: {len(active_universe)}개 기관이 자동 선택되었습니다.")
+    else:
+        active_universe = dict(EXTENDED_FUNDS)
+        selected_fund_names = st.multiselect(
+            "사용자 지정 기관",
+            options=list(active_universe.keys()),
+            default=list(DEFAULT_FUNDS.keys())
+        )
+
+    with st.expander("선정 원칙 보기", expanded=False):
+        st.markdown(
+            "- **Core 50:** 대형 퀀트/멀티전략, 집중형 롱숏, 가치·액티비스트, 장기 집중투자 성향을 우선.\n"
+            "- **Extended 100:** Core에 추가 액티비스트·성장/가치 액티브 매니저·글로벌 대형 운용사를 추가.\n"
+            "- **중복 방지:** 동일 CIK를 여러 이름으로 중복 집계하지 않도록 구성.\n"
+            "- **주의:** 13F는 분기말 보유내역의 사후 공시이므로 이 목록은 ‘예측력이 검증된 순위’가 아니라 SML 연구용 고정 Universe입니다.\n"
+        )
 
 col1, col2, col3, col4 = st.columns([1.2, 1, 1, 1.2])
 with col1:
@@ -875,9 +841,9 @@ with btn_col2:
         st.rerun()
 
 funds_to_analyze = {
-    k: st.session_state["custom_funds"][k]
+    k: active_universe[k]
     for k in selected_fund_names
-    if k in st.session_state["custom_funds"]
+    if k in active_universe
 }
 
 if "result_universe_count" in st.session_state:

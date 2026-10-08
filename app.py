@@ -315,7 +315,6 @@ def calc_score(df, sector_neutral=False):
     z_comp = 0.55 * np.nan_to_num(z_inst) + 0.45 * np.nan_to_num(z_lag)
     d["M3"] = (stats.norm.cdf(z_comp) * 100.0).round(1)
     
-    # 💡 방법 1 반영: 대형주 수급 규모(M1) 가중치 확대 (M1 40% : M2 35% : M3 25%)
     raw_sml = 0.40 * d["M1"] + 0.35 * d["M2"] + 0.25 * d["M3"]
     d["SML_Score"] = raw_sml.round(1).fillna(50.0)
 
@@ -449,22 +448,28 @@ if run_btn:
                 for cusip, val in h2.items():
                     prev_records[(cik, cusip)] = val
         
-        status_box.markdown("📊 **스마트머니 순유입 및 기관 수급 변화량 집계 중...**")
+        status_box.markdown("📊 **스마트머니 순유입 및 직전 공시 대조 집계 중...**")
         prog.progress(55)
         
         tot = {}
         for r in curr_records:
             k = (r["cik"], r["cusip"])
             c = r["cusip"]
-            if k not in prev_records:
+            
+            is_new = (k not in prev_records)
+            p_val = prev_records[k]["val"] if not is_new else 0
+            p_shares = prev_records[k]["shares"] if not is_new else 0
+
+            if is_new:
                 diff_v = r["val"]
                 diff_s = r["shares"]
+                buy_type = "신규"
             else:
-                p = prev_records[k]
-                diff_v = max(0, r["val"] - p["val"]) if r["shares"] > p["shares"] else 0
-                diff_s = max(0, r["shares"] - p["shares"]) if r["shares"] > p["shares"] else 0
+                diff_v = max(0, r["val"] - p_val) if r["shares"] > p_shares else 0
+                diff_s = max(0, r["shares"] - p_shares) if r["shares"] > p_shares else 0
+                buy_type = "확대"
             
-            if diff_v > 0 or k not in prev_records:
+            if diff_v > 0 or is_new:
                 if c not in tot:
                     tot[c] = {
                         "name": r["name"],
@@ -477,11 +482,17 @@ if run_btn:
                 tot[c]["funds"].add(r["fund"])
                 tot[c]["inflow"] += diff_v
                 tot[c]["shares"] += diff_s
+                
+                # 💡 직전 공시 당시 보유여부, 직전 주식수, 직전 평가액 보존
                 tot[c]["details"].append({
                     "fund": r["fund"],
-                    "type": "신규" if k not in prev_records else "확대",
-                    "shares": diff_s,
-                    "val_m": round(diff_v / 1000.0, 1)
+                    "type": buy_type,
+                    "had_prev": "O (기보유)" if not is_new else "X (미보유)",
+                    "prev_shares": p_shares,
+                    "diff_shares": diff_s,
+                    "shares_pct": round((diff_s / p_shares * 100.0), 1) if p_shares > 0 else 999.9,
+                    "prev_val_m": round(p_val / 1000.0, 1),
+                    "diff_val_m": round(diff_v / 1000.0, 1)
                 })
         
         ranked = sorted(
@@ -823,19 +834,41 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 else:
                     st.warning("⚠️ 실시간 시세 미조회 종목으로 가격 지표 및 추천 시그널이 산출되지 않았습니다.")
 
-        # 매수 기관 목록
-        st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록")
+        # ==========================================
+        # ⭐️ [업데이트] 직전 공시 대조 매수 기관 목록
+        # ==========================================
+        st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록 (직전 공시 대조)")
         dt_df = pd.DataFrame(sel_row["details"])
-        dt_df = dt_df.sort_values(by="val_m", ascending=False).reset_index(drop=True)
-        dt_df.columns = ["기관명", "매수구분", "매수주식수", "매수금액($M)"]
+        dt_df = dt_df.sort_values(by="diff_val_m", ascending=False).reset_index(drop=True)
+        
+        def fmt_shares_growth(r):
+            if r["type"] == "신규":
+                return "신규 편입 (NEW)"
+            elif r["shares_pct"] >= 999.0:
+                return "대폭 확대"
+            else:
+                return f"+{r['shares_pct']:.1f}%"
+
+        dt_df["주식증감률"] = dt_df.apply(fmt_shares_growth, axis=1)
+
+        dt_table = dt_df[[
+            "fund", "type", "had_prev", "prev_shares", "diff_shares", "주식증감률", "prev_val_m", "diff_val_m"
+        ]].copy()
+        
+        dt_table.columns = [
+            "기관명", "매수구분", "직전보유여부", "직전보유주식수", "이번매수주식수", "주식증감률", "직전보유액($M)", "이번매수액($M)"
+        ]
         
         st.dataframe(
-            dt_df,
+            dt_table,
             use_container_width=True,
             hide_index=True,
             column_config={
-                "매수주식수": st.column_config.NumberColumn(format="%d 주"),
-                "매수금액($M)": st.column_config.NumberColumn(format="$%.1f M"),
+                "직전보유주식수": st.column_config.NumberColumn(format="%d 주"),
+                "이번매수주식수": st.column_config.NumberColumn(format="%d 주"),
+                "주식증감률": st.column_config.TextColumn(),
+                "직전보유액($M)": st.column_config.NumberColumn(format="$%.1f M"),
+                "이번매수액($M)": st.column_config.NumberColumn(format="$%.1f M"),
             }
         )
     else:

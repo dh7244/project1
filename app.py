@@ -90,8 +90,9 @@ def search_yahoo_ticker(query_name):
         if r.status_code == 200:
             quotes = r.json().get("quotes", [])
             if quotes and "symbol" in quotes[0]:
-                sym = quotes[0]["symbol"].upper()
-                if len(sym) <= 5 and sym.isalpha():
+                sym = str(quotes[0]["symbol"]).upper().strip()
+                # Yahoo 심볼은 BRK-B, BF-B처럼 '-'를 포함할 수 있다.
+                if 1 <= len(sym) <= 15 and re.fullmatch(r"[A-Z0-9.\-^=]+", sym):
                     return sym
     except Exception:
         pass
@@ -361,43 +362,84 @@ def calc_score(df, market_neutral=False):
 # Cached market-data helpers
 # ============================================================
 @st.cache_data(ttl=1800, show_spinner=False)
+def _normalize_yf_history(h, ticker=None):
+    """yfinance 반환값을 항상 단일 OHLCV DataFrame으로 정규화한다."""
+    if h is None or not isinstance(h, pd.DataFrame) or h.empty:
+        return None
+    x = h.copy()
+    if isinstance(x.columns, pd.MultiIndex):
+        # (Ticker, Field) / (Field, Ticker) 양쪽 모두 대응
+        if ticker is not None:
+            for level in range(x.columns.nlevels):
+                vals = [str(v) for v in x.columns.get_level_values(level)]
+                if str(ticker) in vals:
+                    try:
+                        x = x.xs(ticker, axis=1, level=level, drop_level=True)
+                        break
+                    except Exception:
+                        pass
+        if isinstance(x.columns, pd.MultiIndex):
+            x.columns = [str(c[-1] if str(c[-1]).lower() in {"open","high","low","close","adj close","volume"} else c[0]) for c in x.columns]
+    rename = {str(c).strip().lower(): c for c in x.columns}
+    field_map = {}
+    for want in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
+        src = rename.get(want.lower())
+        if src is not None:
+            field_map[src] = want
+    x = x.rename(columns=field_map)
+    if "Close" not in x.columns and "Adj Close" in x.columns:
+        x["Close"] = x["Adj Close"]
+    if "Close" not in x.columns:
+        return None
+    x = x.loc[:, ~x.columns.duplicated()].copy()
+    x.index = pd.to_datetime(x.index)
+    if getattr(x.index, "tz", None) is not None:
+        x.index = x.index.tz_localize(None)
+    return x.dropna(subset=["Close"], how="all")
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def download_price_history(tickers, start=None, end=None, period=None):
-    """Yahoo 시세를 캐시하고, 대량 티커는 작은 묶음으로 내려받아 실패율을 낮춘다."""
-    tickers = tuple(sorted(set(t for t in tickers if t and t != "-")))
+    """Yahoo 시세 수집기. 배치 다운로드 후 누락 ticker만 개별 재시도한다."""
+    tickers = tuple(dict.fromkeys(str(t).strip().upper() for t in tickers if t and t != "-"))
     if not tickers:
         return {}
-
     out = {}
-    chunk_size = 100
-    for i in range(0, len(tickers), chunk_size):
-        chunk = list(tickers[i:i + chunk_size])
+
+    def _kwargs(ts, threads=False):
+        kw = dict(tickers=ts, interval="1d", auto_adjust=False, progress=False,
+                  group_by="ticker", threads=threads)
+        if period:
+            kw["period"] = period
+        else:
+            kw["start"] = start
+            kw["end"] = end
+        return kw
+
+    # 1차: 40개씩 배치. 큰 배치보다 실패/Rate limit에 강하다.
+    for i in range(0, len(tickers), 40):
+        chunk = list(tickers[i:i+40])
         try:
-            kwargs = dict(tickers=chunk, interval="1d", auto_adjust=False,
-                          progress=False, group_by="ticker", threads=True)
-            if period:
-                kwargs["period"] = period
-            else:
-                kwargs["start"] = start
-                kwargs["end"] = end
-            dl = yf.download(**kwargs)
+            dl = yf.download(**_kwargs(chunk, threads=False))
             if isinstance(dl.columns, pd.MultiIndex):
-                level0 = set(str(x) for x in dl.columns.get_level_values(0))
-                level1 = set(str(x) for x in dl.columns.get_level_values(1))
                 for tk in chunk:
-                    h = None
-                    # yfinance 버전에 따라 (Ticker, OHLCV) 또는 (OHLCV, Ticker) 순서가 달라질 수 있다.
-                    if str(tk) in level0:
-                        h = dl[tk]
-                    elif str(tk) in level1:
-                        h = dl.xs(tk, axis=1, level=1)
-                    if h is not None:
-                        h = h.dropna(how="all")
-                        if not h.empty and "Close" in h.columns:
-                            out[tk] = h
-            elif len(chunk) == 1 and not dl.empty:
-                h = dl.dropna(how="all")
-                if "Close" in h.columns:
+                    h = _normalize_yf_history(dl, tk)
+                    if h is not None and len(h) > 0:
+                        out[tk] = h
+            elif len(chunk) == 1:
+                h = _normalize_yf_history(dl, chunk[0])
+                if h is not None and len(h) > 0:
                     out[chunk[0]] = h
+        except Exception:
+            pass
+
+    # 2차: 배치에서 빠진 ticker만 개별 호출.
+    missing = [tk for tk in tickers if tk not in out]
+    for tk in missing:
+        try:
+            dl = yf.download(**_kwargs(tk, threads=False))
+            h = _normalize_yf_history(dl, tk)
+            if h is not None and len(h) >= 2:
+                out[tk] = h
         except Exception:
             continue
     return out
@@ -405,16 +447,16 @@ def download_price_history(tickers, start=None, end=None, period=None):
 @st.cache_data(ttl=1800, show_spinner=False)
 def download_spy_history(start=None, end=None, period=None):
     try:
-        kwargs = dict(tickers="SPY", interval="1d", auto_adjust=False, progress=False, threads=False)
+        kwargs = dict(tickers="SPY", interval="1d", auto_adjust=False, progress=False,
+                      group_by="ticker", threads=False)
         if period:
             kwargs["period"] = period
         else:
             kwargs["start"] = start
             kwargs["end"] = end
         h = yf.download(**kwargs)
-        if isinstance(h.columns, pd.MultiIndex):
-            h = h.xs("SPY", axis=1, level=1)
-        return h.dropna(how="all") if h is not None else pd.DataFrame()
+        out = _normalize_yf_history(h, "SPY")
+        return out if out is not None else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
@@ -856,7 +898,7 @@ with col2:
 with col3:
     pass_only = st.checkbox("CMF 매집 확인(PASS)만", value=False)
 with col4:
-    valid_price_only = st.checkbox("시세 조회 성공 종목만 보기", value=False)
+    valid_price_only = st.checkbox("시세 조회 성공 종목만 보기", value=True)
 
 btn_col1, btn_col2 = st.columns([3, 1])
 with btn_col1:
@@ -1133,23 +1175,13 @@ if run_btn:
 if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     df_show = st.session_state["result_df"].copy()
     
-    raw_result_df = df_show.copy()
-
     if valid_price_only:
-        filtered_price_df = df_show[df_show["Price_Val"] > 0].reset_index(drop=True)
-        if filtered_price_df.empty and not df_show.empty:
-            st.warning("⚠️ 시세 필터 결과가 0개입니다. SML 계산 결과 자체는 존재하므로 전체 결과를 표시합니다. 아래 진단에서 시세 조회 실패 원인을 확인하세요.")
-        else:
-            df_show = filtered_price_df
+        df_show = df_show[df_show["Price_Val"] > 0].reset_index(drop=True)
 
     if pass_only:
         df_show = df_show[df_show["AD_Pass"] == True].reset_index(drop=True)
-
-    if df_show.empty and not raw_result_df.empty:
-        st.warning("⚠️ 현재 필터 조합으로 표시할 종목이 없습니다. 필터를 해제하면 전체 SML 결과를 볼 수 있습니다.")
-        st.stop()
-
-    latest_filing_str = df_show["Filing_Date"].max() if "Filing_Date" in df_show.columns and not df_show.empty else "2026-08-14"
+        
+    latest_filing_str = df_show["Filing_Date"].max() if "Filing_Date" in df_show.columns else "2026-08-14"
     prev_f_date, next_f_date, d_days = calc_next_filing_deadline(latest_filing_str)
     
     col_d1, col_d2, col_d3 = st.columns(3)

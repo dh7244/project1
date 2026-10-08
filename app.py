@@ -7,12 +7,11 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 import requests
-from scipy import stats
 import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="13F SML Radar v1.5",
+    page_title="13F SML Radar v2.0",
     page_icon="📈",
     layout="wide"
 )
@@ -128,7 +127,11 @@ def load_sec_ticker_directory():
         pass
     return name_to_tk
 
-NAME_DICT = load_sec_ticker_directory()
+# SEC ticker directory는 앱 시작 시 네트워크 요청을 하지 않는다.
+# 실제 티커 매칭이 필요할 때만 lazy-load하여 첫 화면 로딩을 가볍게 한다.
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_name_dict():
+    return load_sec_ticker_directory()
 
 @st.cache_data(ttl=86400)
 def search_yahoo_ticker(query_name):
@@ -158,12 +161,16 @@ def resolve_ticker_advanced(cusip, name):
         if kw in nm_upper:
             return sym
     clean_n = re.sub(r'[^A-Z0-9]', '', nm_upper)
-    if clean_n in NAME_DICT:
-        return NAME_DICT[clean_n]
+
+    # 1차: 분석 실행 시 한 번만 lazy-load하는 SEC 공식 ticker directory.
+    # 앱 시작 시에는 호출하지 않으므로 첫 화면은 네트워크와 무관하다.
+    name_dict = get_name_dict()
+    if clean_n in name_dict:
+        return name_dict[clean_n]
+
+    # 2차 fallback: SEC 명칭이 정확히 일치하지 않을 때만 Yahoo 검색.
     found_tk = search_yahoo_ticker(name)
-    if found_tk != "-":
-        return found_tk
-    return "-"
+    return found_tk if found_tk != "-" else "-"
 
 def calc_next_filing_deadline(latest_date_str):
     try:
@@ -298,7 +305,7 @@ def calc_score(df, market_neutral=False):
     - 정규화 방법의 중복(MinMax/Percentile/Z-CDF)을 제거
     - 기관수급을 Breadth + Absolute/Relative Flow로 분해
     - 가격 소외를 시장 대비 Alpha + 3M Alpha + 52W 위치 + 가격 안정화로 구성
-    - A/D는 이진 필터가 아니라 별도 Market Accumulation 확인점수로 사용
+    - CMF는 이진 필터가 아니라 별도 Market Accumulation 확인점수로 사용
     """
     if df.empty:
         return df
@@ -362,7 +369,7 @@ def calc_score(df, market_neutral=False):
     d["Lag_Contrib"] = (d["Lag_Score"] * 0.45).round(1)
     d["SML_Score"] = (d["Inst_Contrib"] + d["Lag_Contrib"]).round(1)
 
-    # 설명용 하위 점수: 기존 M1/M2/M3보다 정보의 종류가 명확하도록 변경
+    # 설명용 하위 점수: 현재 SML 2.0의 세부 축을 설명하기 위한 보조 점수
     d["Flow_Score"] = (
         0.40 * f_abs + 0.20 * f_hold + 0.40 * f_adv
     ).round(1)
@@ -405,6 +412,57 @@ def calc_score(df, market_neutral=False):
     d["Signal"] = sigs
     d["Rank"] = d["SML_Score"].rank(ascending=False, method="min").fillna(len(d)).astype(int)
     return d.sort_values(by=["SML_Score", "SML_Percentile"], ascending=False).reset_index(drop=True)
+
+# ============================================================
+# Cached market-data helpers
+# ============================================================
+@st.cache_data(ttl=1800, show_spinner=False)
+def download_price_history(tickers, start=None, end=None, period=None):
+    """Yahoo 시세를 캐시하고, 대량 티커는 작은 묶음으로 내려받아 실패율을 낮춘다."""
+    tickers = tuple(sorted(set(t for t in tickers if t and t != "-")))
+    if not tickers:
+        return {}
+
+    out = {}
+    chunk_size = 100
+    for i in range(0, len(tickers), chunk_size):
+        chunk = list(tickers[i:i + chunk_size])
+        try:
+            kwargs = dict(tickers=chunk, interval="1d", auto_adjust=False,
+                          progress=False, group_by="ticker", threads=True)
+            if period:
+                kwargs["period"] = period
+            else:
+                kwargs["start"] = start
+                kwargs["end"] = end
+            dl = yf.download(**kwargs)
+            if isinstance(dl.columns, pd.MultiIndex):
+                for tk in chunk:
+                    if tk in dl.columns.get_level_values(0):
+                        h = dl[tk].dropna(how="all")
+                        if not h.empty:
+                            out[tk] = h
+            elif len(chunk) == 1 and not dl.empty:
+                out[chunk[0]] = dl.dropna(how="all")
+        except Exception:
+            continue
+    return out
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def download_spy_history(start=None, end=None, period=None):
+    try:
+        kwargs = dict(tickers="SPY", interval="1d", auto_adjust=False, progress=False, threads=False)
+        if period:
+            kwargs["period"] = period
+        else:
+            kwargs["start"] = start
+            kwargs["end"] = end
+        h = yf.download(**kwargs)
+        if isinstance(h.columns, pd.MultiIndex):
+            h = h.xs("SPY", axis=1, level=1)
+        return h.dropna(how="all") if h is not None else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 # ============================================================
 # Historical walk-forward backtest engine
@@ -483,7 +541,8 @@ def _hist_features(hist, filing_date):
 
 
 def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
-                              market_neutral=True, forward_days=(21,63,126)):
+                              market_neutral=True, forward_days=(21,63,126),
+                              progress_callback=None, status_callback=None):
     """13F filing-date 기준의 순차적(out-of-sample) SML 백테스트.
 
     각 분기마다:
@@ -491,11 +550,21 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
       2) filing 이전 가격만으로 SML 점수 계산
       3) 이후 21/63/126 거래일 수익률을 측정
     """
+    def _progress(v):
+        if progress_callback:
+            progress_callback(max(0, min(100, int(v))))
+    def _status(msg):
+        if status_callback:
+            status_callback(msg)
+
     all_filings = {}
-    for name, cik in funds_to_analyze.items():
+    fund_items = list(funds_to_analyze.items())
+    for i, (name, cik) in enumerate(fund_items, 1):
+        _status(f"📥 **[1/5 과거 공시 수집 {i}/{len(fund_items)}]** `{name}`의 과거 13F를 불러오는 중")
         fs = load_historical_filings(cik, n_quarters=n_quarters + 1)
         if fs:
             all_filings[(name, cik)] = fs
+        _progress(5 + 15 * i / max(len(fund_items), 1))
 
     periods = sorted({f["period"] for fs in all_filings.values() for f in fs}, reverse=True)
     periods = periods[:int(n_quarters)]
@@ -503,7 +572,10 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
         return pd.DataFrame(), pd.DataFrame()
 
     quarter_rows = []
+    total_periods = len(periods)
     for qi, period in enumerate(sorted(periods)):
+        _status(f"📊 **[2/5 분기별 수급 집계 {qi+1}/{total_periods}]** {period} 13F 변동을 집계하는 중")
+        _progress(20 + 20 * qi / max(total_periods, 1))
         curr_records, prev_records = [], {}
         filing_dates = []
         for (name, cik), fs in all_filings.items():
@@ -554,7 +626,12 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
 
         # 중요: 기관수/유입액으로 후보를 먼저 Top-N 절단하지 않는다.
         # 전체 매수 후보를 SML universe로 만든 뒤 SML percentile을 계산한다.
-        resolved = [(c,d,resolve_ticker_advanced(c,d["name"])) for c,d in tot.items()]
+        _status(f"🔎 **[3/5 티커 매칭]** {period} 후보 {len(tot):,}개를 전체 SML 유니버스로 유지하며 매칭 중")
+        resolved = []
+        for ri, (c, d) in enumerate(tot.items(), 1):
+            resolved.append((c, d, resolve_ticker_advanced(c, d["name"])))
+            if ri % 100 == 0 or ri == len(tot):
+                _progress(40 + 10 * ri / max(len(tot), 1))
         resolved = [x for x in resolved if x[2] != "-"]
         # 동일 Yahoo ticker가 중복되는 경우 첫 관측치만 사용
         seen_tickers = set()
@@ -566,33 +643,16 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
             resolved_unique.append(x)
         resolved = resolved_unique
         tickers = list(dict.fromkeys([x[2] for x in resolved]))
-        price_hist = {}
         start_dt = pd.Timestamp(period_date) - pd.Timedelta(days=430)
         end_dt = pd.Timestamp(period_date) + pd.Timedelta(days=220)
-        if tickers:
-            try:
-                dl = yf.download(tickers=tickers, start=start_dt.strftime("%Y-%m-%d"),
-                                  end=end_dt.strftime("%Y-%m-%d"), interval="1d",
-                                  auto_adjust=False, progress=False, group_by="ticker", threads=True)
-                if isinstance(dl.columns, pd.MultiIndex):
-                    for tk in tickers:
-                        if tk in dl.columns.get_level_values(0):
-                            h = dl[tk].dropna(how="all")
-                            if not h.empty: price_hist[tk] = h
-                elif len(tickers) == 1 and not dl.empty:
-                    price_hist[tickers[0]] = dl.dropna(how="all")
-            except Exception:
-                price_hist = {}
-
-        spy = None
-        try:
-            spy = yf.download("SPY", start=start_dt.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d"),
-                              interval="1d", auto_adjust=False, progress=False, threads=False)
-            if isinstance(spy.columns, pd.MultiIndex):
-                spy = spy.xs("SPY", axis=1, level=1)
-            spy = spy.dropna(how="all")
-        except Exception:
-            spy = None
+        _status(f"📈 **[4/5 시세 다운로드]** {period} 유효 티커 {len(tickers):,}개 + SPY 과거 시세를 조회하는 중")
+        _progress(52)
+        price_hist = download_price_history(
+            tickers, start=start_dt.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d")
+        )
+        spy = download_spy_history(
+            start=start_dt.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d")
+        )
 
         spy_feat = _hist_features(spy, period_date)
         rows = []
@@ -621,6 +681,8 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
             }
             rows.append(row)
 
+        _status(f"🧮 **[5/5 SML 계산]** {period} 가격팩터와 수급팩터를 결합해 점수를 계산하는 중")
+        _progress(65 + 25 * (qi + 1) / max(total_periods, 1))
         raw = pd.DataFrame(rows)
         required = ["Price_Val", "Rel_Return", "Return_3M", "Dist_52W", "CMF_10D"]
         raw = raw.dropna(subset=required).copy()
@@ -714,29 +776,62 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
             "평균시장초과": np.mean(lsa) if lsa else np.nan,
             "표준편차": np.std(ls, ddof=1) if len(ls) > 1 else np.nan,
         })
+    _status("✅ **백테스트 완료** — 분위수별 미래수익률과 Long-Short 성과를 정리했습니다.")
+    _progress(100)
     return bt, pd.DataFrame(summary_rows)
 
 # --- UI 레이아웃 ---
-st.title("🎯 SEC 13F SML 레이더 v1.5")
-st.caption("스마트머니 래그(SML) 분석 | 수급 vs 소외 기여도 분해 | 절대금액 + 상대수급 균형 | 공시 일정 모니터링")
+st.title("🎯 SEC 13F SML 레이더 v2.0")
+st.caption("13F 스마트머니 수급 × 가격 소외 × 시장상대수익률 | 실시간 데이터 수집은 실행 버튼을 누를 때만 시작")
 
-with st.expander("📖 SML 점수 및 퀀트 팩터(SML 2.0) 상세 가이드 (필독)", expanded=False):
+with st.expander("📖 SML 2.0 모델·데이터·시그널 가이드 (필독)", expanded=False):
     st.markdown(
         """
-        ### 1. SML 점수(Smart Money Lag Score)란?
-        * **개념**: **"스마트머니(월가 대형 기관)의 집중 매수가 유입되었음에도, 주가는 아직 오르지 않고 뒤처진(Lag) 저평가 종목"**을 발굴하는 퀀트 앙상블 스코어입니다 (100점 만점).
-        * **핵심 가설**: 거대 자본을 굴리는 전문 기관들은 장기간에 걸쳐 분할 매집하며, 공시 이후 시장의 관심이 쏠리면서 뒤늦게 주가가 제자리를 찾아가는 '시차 반등(Lag Reversal)' 현상을 노립니다.
-        * **종합 공식**: 
-          $$\\text{SML 점수} = \\underbrace{(\\text{수급 점수} \\times 0.55)}_{\\text{스마트머니 수급 기여도 (최대 55점)}} + \\underbrace{(\\text{소외 점수} \\times 0.45)}_{\\text{가격 저평가/래깅 기여도 (최대 45점)}}$$
-        * **앙상블 서브 모델 가중치**: $0.40 \\times M_1 + 0.35 \\times M_2 + 0.25 \\times M_3$
+        ### 1. 이 시스템이 찾는 종목
+        **SML(Smart Money Lag)**은 선택한 기관들이 13F에서 보유주식을 늘린 종목 중에서, 기관 수급 강도는 높은데 주가가 시장 대비 아직 뒤처진 종목을 찾는 상대순위 모델입니다.
 
-        ---
-        ### 2. 투자 시그널 기준 (대형주 개편 모델 최적화)
-        * **🟢 STRONG_BUY (적극 매수)**: SML 상위 5% + 10일 CMF 양수
-        * **🔵 ACCUMULATE (분할 매집)**: SML 상위 5~15%
-        * **🟡 WATCH_LAG (단기 관망)**: SML 상위 15%이나 10일 CMF가 약함
-        * **🟠 WATCH (관찰)**: SML 상위 30% 이내
-        * **⚪ NEUTRAL (중립/대기)**: 그 외
+        ### 2. SML 2.0 점수 구성
+        최종 점수는 **수급 55점 + 가격 소외 45점 = 100점**입니다. 각 입력은 횡단면 percentile rank를 기본으로 하고, 극단값은 1~99% 구간으로 winsorize합니다.
+
+        **① 기관 수급 점수(55%)**
+        - 기관 참여폭(Breadth): 10%
+        - 13F 현재 보유액 대비 추정 유입 비율: 10%
+        - 최근 20일 평균거래대금 대비 추정 유입 비율: 20%
+        - 추정 절대 유입액: 10%
+        - 신규 진입 기관 수: 5%
+
+        **② 가격 소외 점수(45%)**
+        - 6개월 SPY 대비 초과수익의 역순위: 15%
+        - 3개월 SPY 대비 초과수익의 역순위: 10%
+        - 52주 고점 대비 하락폭의 역순위: 10%
+        - 10일 CMF(가격·거래량 기반 매집 확인): 10%
+
+        따라서 **SML이 높다는 것은 단순히 주가가 많이 빠졌다는 뜻이 아니라, 기관 수급 강도와 상대적 가격 소외가 동시에 높다는 뜻**입니다.
+
+        ### 3. 13F 유입액의 의미와 한계
+        13F에는 실제 체결 거래내역이 공개되지 않습니다. 따라서 이 시스템의 `추정 유입액`은 **보유주식 증가분 × 해당 분기 보고가격**으로 계산한 수급 강도 proxy입니다. 실제 매수 체결금액과 동일하지 않습니다.
+
+        또한 13F는 분기말 보유내역을 사후 공개하므로, **13F 보고일과 실제 매수 시점 사이에 시차**가 존재합니다.
+
+        ### 4. CMF / A·D의 의미
+        CMF는 기관의 13F 수급이 아니라 **시장 가격과 거래량에서 관찰되는 매집/분산 확인 신호**입니다. 현재 모델에서는 이를 수급의 직접 증거가 아니라 가격 소외를 보완하는 확인점수로 사용합니다.
+
+        ### 5. 시그널
+        - 🟢 **STRONG_BUY**: SML 백분위 95 이상 + 매집점수 50 이상
+        - 🔵 **ACCUMULATE**: SML 백분위 85 이상 + 매집점수 50 이상
+        - 🟡 **WATCH_LAG**: SML 백분위 85 이상이나 매집 확인이 약함
+        - 🟠 **WATCH**: SML 백분위 70 이상
+        - ⚪ **NEUTRAL**: 그 외
+
+        이는 **백테스트로 최적화된 매매 임계값이 아니라 현재 모델의 휴리스틱 분류 기준**입니다.
+
+        ### 6. 워크포워드 백테스트
+        백테스트에서는 각 분기의 전체 유효 13F 매수 후보에서 SML을 계산하고, 모든 선택 기관의 해당 분기 정보가 공개된 **가장 늦은 공시일 다음 거래일**을 진입 기준으로 합니다. 그 뒤 21/63/126 거래일의 미래수익률과 SPY 대비 초과수익을 측정합니다.
+
+        **중요:** 백테스트는 현재 점수의 성능을 보여주는 검증 도구이며, 아직 장기간 out-of-sample 최적화나 거래비용을 포함한 실전 성과 검증을 완료한 것은 아닙니다.
+
+        ### 7. 데이터 수집/속도
+        앱을 열기만 했을 때는 SEC·Yahoo 데이터를 내려받지 않습니다. 실제 분석/백테스트 버튼을 눌렀을 때만 데이터를 수집하며, SEC 공시/보유내역과 Yahoo 시세는 캐시를 사용합니다.
         """
     )
 
@@ -766,7 +861,7 @@ with col1:
 with col2:
     sec_neutral = st.checkbox("시장(SPY) 대비 상대수익률 적용", value=True)
 with col3:
-    pass_only = st.checkbox("A/D Line 통과(PASS)만", value=False)
+    pass_only = st.checkbox("CMF 매집 확인(PASS)만", value=False)
 with col4:
     valid_price_only = st.checkbox("시세 조회 성공 종목만 보기", value=True)
 
@@ -785,6 +880,19 @@ funds_to_analyze = {
     if k in st.session_state["custom_funds"]
 }
 
+if "result_universe_count" in st.session_state:
+    st.caption(f"전체 유효 SML 유니버스 {st.session_state['result_universe_count']:,}개에서 점수를 계산하고, 화면에는 선택한 Top N만 표시합니다. 첫 화면에서는 외부 데이터를 조회하지 않습니다.")
+
+if "last_run_diagnostics" in st.session_state:
+    diag = st.session_state["last_run_diagnostics"]
+    with st.expander("🔧 데이터 수집/계산 진단", expanded=False):
+        st.write({k: v for k, v in diag.items() if not isinstance(v, list)})
+        for title, key in [("공시 수집 실패", "공시 수집 실패 목록"), ("티커 매칭 실패", "티커 매칭 실패 목록"), ("시세 조회 실패", "시세 조회 실패 목록"), ("팩터 계산 예외", "팩터 계산 예외 목록")]:
+            vals = diag.get(key, [])
+            if vals:
+                st.caption(f"{title} (최대 100개)")
+                st.dataframe(pd.DataFrame({title: vals}), use_container_width=True, hide_index=True)
+
 if run_btn:
     if not funds_to_analyze:
         st.error("최소 1개 이상의 기관을 선택해야 합니다.")
@@ -795,6 +903,10 @@ if run_btn:
         curr_records = []
         prev_records = {}
         filing_dates = []
+        collection_failures = []
+        ticker_failures = []
+        price_failures = []
+        factor_failures = []
         
         fund_items = list(funds_to_analyze.items())
         tot_cnt = len(fund_items)
@@ -805,6 +917,7 @@ if run_btn:
             
             f = get_filings(cik)
             if not f:
+                collection_failures.append(name)
                 continue
             filing_dates.append(f[0]["date"])
             h1 = get_holdings(cik, f[0]["acc"])
@@ -879,50 +992,23 @@ if run_btn:
                 "diff_val_m": round(diff_v_reported / 1000.0, 1)
             })
 
-        # 기관 수급 breadth를 먼저 확보하되, 순위 후보는 절대금액만으로 자르지 않는다.
-        ranked = sorted(
-            tot.items(),
-            key=lambda x: (len(x[1]["funds"]), x[1]["inflow"]),
-            reverse=True
-        )[:top_n]
-
-        # 티커 해석은 캐시된 함수들을 이용하고, 시세는 가능한 한 한 번에 내려받는다.
+        # 전체 후보에서 SML을 계산한다. top_n은 최종 화면 표시 개수일 뿐,
+        # 점수 계산 전에 후보를 잘라내지 않는다. 이것이 SML percentile의 핵심이다.
         resolved = []
-        for cusip, d in ranked:
-            resolved.append((cusip, d, resolve_ticker_advanced(cusip, d["name"])))
-        tickers = list(dict.fromkeys([tk for _, _, tk in resolved if tk != "-"]))
-        market_hist = {}
-        if tickers:
-            try:
-                dl = yf.download(
-                    tickers=tickers,
-                    period="1y",
-                    interval="1d",
-                    auto_adjust=False,
-                    progress=False,
-                    group_by="ticker",
-                    threads=True
-                )
-                if isinstance(dl.columns, pd.MultiIndex):
-                    for tk in tickers:
-                        if tk in dl.columns.get_level_values(0):
-                            h = dl[tk].dropna(how="all")
-                            if not h.empty:
-                                market_hist[tk] = h
-                elif len(tickers) == 1 and not dl.empty:
-                    market_hist[tickers[0]] = dl.dropna(how="all")
-            except Exception:
-                market_hist = {}
+        total_candidates = len(tot)
+        for ridx, (cusip, d) in enumerate(tot.items()):
+            if ridx % 50 == 0:
+                status_box.markdown(f"🔎 **티커 매칭 {ridx}/{total_candidates}** — 전체 후보를 SML 유니버스로 유지합니다.")
+            tk_resolved = resolve_ticker_advanced(cusip, d["name"])
+            if tk_resolved == "-":
+                ticker_failures.append(d["name"])
+            resolved.append((cusip, d, tk_resolved))
+        resolved = [x for x in resolved if x[2] != "-"]
+        tickers = list(dict.fromkeys([tk for _, _, tk in resolved]))
+        market_hist = download_price_history(tickers, period="1y")
 
-        # 시장 기준 ETF는 한 번만 조회. '섹터 중립'이라는 잘못된 가짜 sector mapping 대신 시장 상대수익률을 사용.
-        spy_hist = None
-        try:
-            spy_hist = yf.download("SPY", period="1y", interval="1d", auto_adjust=False, progress=False, threads=False)
-            if isinstance(spy_hist.columns, pd.MultiIndex):
-                spy_hist = spy_hist.xs("SPY", axis=1, level=1)
-            spy_hist = spy_hist.dropna(how="all")
-        except Exception:
-            spy_hist = None
+        # SPY는 캐시된 단일 시계열을 사용한다.
+        spy_hist = download_spy_history(period="1y")
 
         def trailing_return(hist, n):
             if hist is None or hist.empty or len(hist) < 2:
@@ -945,6 +1031,8 @@ if run_btn:
             ad_pass, cmf_10d, avg_clv = False, 0.0, 0.0
             cur_p, base_p, price_chg, pct_chg = 0.0, 0.0, 0.0, 0.0
             h = market_hist.get(tk)
+            if h is None or h.empty or len(h) < 20:
+                price_failures.append(tk)
             if h is not None and not h.empty and len(h) >= 20:
                 try:
                     close = h["Close"].astype(float)
@@ -976,7 +1064,7 @@ if run_btn:
                     avg_clv = float(recent["clv"].mean())
                     ad_pass = cmf_10d >= 0.0
                 except Exception:
-                    pass
+                    factor_failures.append(tk)
 
             inflow_m = d["inflow"] / 1000.0
             current_holdings_m = d["current_value"] / 1000.0
@@ -1022,14 +1110,32 @@ if run_btn:
 
         status_box.markdown("✨ **SML 점수 앙상블 및 랭킹 정렬 완료!**")
         prog.progress(100)
-        time.sleep(0.5)
-        
+
+        res_df = calc_score(pd.DataFrame(data_rows), market_neutral=sec_neutral)
+        st.session_state["last_run_diagnostics"] = {
+            "기관 공시 수집 실패": len(collection_failures),
+            "티커 매칭 실패": len(ticker_failures),
+            "시세 조회 실패": len(price_failures),
+            "팩터 계산 예외": len(factor_failures),
+            "SML 계산 후보": len(res_df),
+            "공시 수집 실패 목록": collection_failures[:100],
+            "티커 매칭 실패 목록": ticker_failures[:100],
+            "시세 조회 실패 목록": price_failures[:100],
+            "팩터 계산 예외 목록": factor_failures[:100],
+        }
+        if collection_failures or ticker_failures or price_failures or factor_failures:
+            st.info(
+                f"데이터 진단 — 공시 실패 {len(collection_failures)}개 · "
+                f"티커 실패 {len(ticker_failures)}개 · 시세 실패 {len(price_failures)}개 · "
+                f"팩터 예외 {len(factor_failures)}개 · 최종 SML {len(res_df):,}개"
+            )
         prog.empty()
         status_box.empty()
-        
-        res_df = calc_score(pd.DataFrame(data_rows), market_neutral=sec_neutral)
-        st.session_state["result_df"] = res_df
-        st.session_state["selected_ticker"] = res_df["Ticker"].iloc[0] if not res_df.empty else None
+        # top_n은 표시 개수만 제한한다. SML percentile은 전체 유효 후보를 기준으로 계산된 뒤 유지된다.
+        display_df = res_df.head(int(top_n)).copy()
+        st.session_state["result_df"] = display_df
+        st.session_state["selected_ticker"] = display_df["Ticker"].iloc[0] if not display_df.empty else None
+        st.session_state["result_universe_count"] = len(res_df)
 
 if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     df_show = st.session_state["result_df"].copy()
@@ -1084,7 +1190,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         if not pure_top5.empty:
             p_table = pure_top5[["Ticker", "Name", "SML_Score", "Price_Val", "Pct_Chg", "AD_Chg_Pct", "Signal"]].copy()
             p_table.insert(0, "선정", [f"Top {i+1}" for i in range(len(p_table))])
-            p_table.columns = ["선정", "티커", "기업명", "SML점수", "현재가($)", "공시후변동률", "A/D변화", "시그널"]
+            p_table.columns = ["선정", "티커", "기업명", "SML점수", "현재가($)", "공시후변동률", "CMF(10D)", "시그널"]
             p_table["공시후변동률"] = p_table["공시후변동률"].apply(fmt_pct_chg_symbol)
 
             p_event = st.dataframe(
@@ -1097,7 +1203,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 column_config={
                     "SML점수": st.column_config.NumberColumn(format="%.1f 점"),
                     "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
-                    "A/D변화": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "CMF(10D)": st.column_config.NumberColumn(format="%+.1f%%"),
                 }
             )
             if p_event and p_event.selection and p_event.selection.rows:
@@ -1117,7 +1223,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
             theme_picks.append({
                 "전략 슬롯": "🐋 고래 매집", "티커": t1["Ticker"], "기업명": t1["Name"],
                 "SML점수": t1["SML_Score"], "현재가($)": t1["Price_Val"], "공시후변동률": t1["Pct_Chg"],
-                "A/D변화": t1["AD_Chg_Pct"], "선정 이유": "순유입액 1위"
+                "CMF(10D)": t1["AD_Chg_Pct"], "선정 이유": "순유입액 1위"
             })
             selected_tickers.add(t1["Ticker"])
 
@@ -1127,7 +1233,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
             theme_picks.append({
                 "전략 슬롯": "📉 바닥 소외", "티커": t2["Ticker"], "기업명": t2["Name"],
                 "SML점수": t2["SML_Score"], "현재가($)": t2["Price_Val"], "공시후변동률": t2["Pct_Chg"],
-                "A/D변화": t2["AD_Chg_Pct"], "선정 이유": f"52주 낙폭 {t2['Dist_52W']:.1f}%"
+                "CMF(10D)": t2["AD_Chg_Pct"], "선정 이유": f"52주 낙폭 {t2['Dist_52W']:.1f}%"
             })
             selected_tickers.add(t2["Ticker"])
 
@@ -1137,7 +1243,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
             theme_picks.append({
                 "전략 슬롯": "⚡ 수급 급증", "티커": t3["Ticker"], "기업명": t3["Name"],
                 "SML점수": t3["SML_Score"], "현재가($)": t3["Price_Val"], "공시후변동률": t3["Pct_Chg"],
-                "A/D변화": t3["AD_Chg_Pct"], "선정 이유": f"상대 수급강도 {t3['Flow_Score']:.1f}점"
+                "CMF(10D)": t3["AD_Chg_Pct"], "선정 이유": f"상대 수급강도 {t3['Flow_Score']:.1f}점"
             })
             selected_tickers.add(t3["Ticker"])
 
@@ -1147,7 +1253,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
             theme_picks.append({
                 "전략 슬롯": "🌊 차트 매집", "티커": t4["Ticker"], "기업명": t4["Name"],
                 "SML점수": t4["SML_Score"], "현재가($)": t4["Price_Val"], "공시후변동률": t4["Pct_Chg"],
-                "A/D변화": t4["AD_Chg_Pct"], "선정 이유": f"A/D {t4['AD_Chg_Pct']:+.1f}%"
+                "CMF(10D)": t4["AD_Chg_Pct"], "선정 이유": f"CMF {t4['AD_Chg_Pct']:+.1f}%"
             })
             selected_tickers.add(t4["Ticker"])
 
@@ -1157,7 +1263,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
             theme_picks.append({
                 "전략 슬롯": "💎 밸류 앙상블", "티커": t5["Ticker"], "기업명": t5["Name"],
                 "SML점수": t5["SML_Score"], "현재가($)": t5["Price_Val"], "공시후변동률": t5["Pct_Chg"],
-                "A/D변화": t5["AD_Chg_Pct"], "선정 이유": f"SML 상위 {100-t5['SML_Percentile']+1:.1f}%"
+                "CMF(10D)": t5["AD_Chg_Pct"], "선정 이유": f"SML 상위 {100-t5['SML_Percentile']+1:.1f}%"
             })
             selected_tickers.add(t5["Ticker"])
 
@@ -1175,7 +1281,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 column_config={
                     "SML점수": st.column_config.NumberColumn(format="%.1f 점"),
                     "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
-                    "A/D변화": st.column_config.NumberColumn(format="%+.1f%%"),
+                    "CMF(10D)": st.column_config.NumberColumn(format="%+.1f%%"),
                 }
             )
             if t_event and t_event.selection and t_event.selection.rows:
@@ -1289,7 +1395,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                         f"({chg_sign}\\${chg_abs:.2f}, {pct_str})"
                     )
                     
-                    pass_str = "✅ PASS (매집 유입 확인)" if sel_row["AD_Pass"] else "❌ FAIL (분산/차익매도 우려)"
+                    pass_str = "✅ PASS (10일 CMF 양수: 매집 확인)" if sel_row["AD_Pass"] else "❌ FAIL (10일 CMF 음수: 매집 확인 약함)"
                     st.markdown(f"- **10일 시장 매집강도(CMF)**: **{pass_str}**")
                     st.write(f"  * **최근 10일 CMF**: `{sel_row['CMF_10D']:+.3f}` *(+1에 가까울수록 매집 압력 우세)*")
                     st.write(f"  * **평균 장중 종가 위치 (CLV)**: `{sel_row['Avg_CLV']:+.2f}` *(범위: -1.0 ~ +1.0 / +에 가까울수록 고가 마감)*")
@@ -1356,13 +1462,19 @@ if bt_run:
     if not funds_to_analyze:
         st.error("백테스트할 기관을 최소 1개 이상 선택하세요.")
     else:
-        with st.spinner(f"과거 {bt_quarters}개 분기의 전체 후보를 SML로 평가하고 미래성과를 계산 중입니다..."):
-            bt_detail, bt_summary = run_walk_forward_backtest(
-                funds_to_analyze,
-                n_quarters=bt_quarters,
-                market_neutral=bt_market_neutral,
-                forward_days=(21, 63, 126)
-            )
+        bt_status = st.empty()
+        bt_prog = st.progress(0)
+        bt_status.markdown("🧪 **백테스트 준비 중...**")
+        bt_detail, bt_summary = run_walk_forward_backtest(
+            funds_to_analyze,
+            n_quarters=bt_quarters,
+            market_neutral=bt_market_neutral,
+            forward_days=(21, 63, 126),
+            progress_callback=bt_prog.progress,
+            status_callback=bt_status.markdown,
+        )
+        bt_prog.empty()
+        bt_status.empty()
         st.session_state["backtest_detail"] = bt_detail
         st.session_state["backtest_summary"] = bt_summary
 

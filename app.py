@@ -381,13 +381,23 @@ def download_price_history(tickers, start=None, end=None, period=None):
                 kwargs["end"] = end
             dl = yf.download(**kwargs)
             if isinstance(dl.columns, pd.MultiIndex):
+                level0 = set(str(x) for x in dl.columns.get_level_values(0))
+                level1 = set(str(x) for x in dl.columns.get_level_values(1))
                 for tk in chunk:
-                    if tk in dl.columns.get_level_values(0):
-                        h = dl[tk].dropna(how="all")
-                        if not h.empty:
+                    h = None
+                    # yfinance 버전에 따라 (Ticker, OHLCV) 또는 (OHLCV, Ticker) 순서가 달라질 수 있다.
+                    if str(tk) in level0:
+                        h = dl[tk]
+                    elif str(tk) in level1:
+                        h = dl.xs(tk, axis=1, level=1)
+                    if h is not None:
+                        h = h.dropna(how="all")
+                        if not h.empty and "Close" in h.columns:
                             out[tk] = h
             elif len(chunk) == 1 and not dl.empty:
-                out[chunk[0]] = dl.dropna(how="all")
+                h = dl.dropna(how="all")
+                if "Close" in h.columns:
+                    out[chunk[0]] = h
         except Exception:
             continue
     return out
@@ -846,7 +856,7 @@ with col2:
 with col3:
     pass_only = st.checkbox("CMF 매집 확인(PASS)만", value=False)
 with col4:
-    valid_price_only = st.checkbox("시세 조회 성공 종목만 보기", value=True)
+    valid_price_only = st.checkbox("시세 조회 성공 종목만 보기", value=False)
 
 btn_col1, btn_col2 = st.columns([3, 1])
 with btn_col1:
@@ -1123,13 +1133,23 @@ if run_btn:
 if "result_df" in st.session_state and not st.session_state["result_df"].empty:
     df_show = st.session_state["result_df"].copy()
     
+    raw_result_df = df_show.copy()
+
     if valid_price_only:
-        df_show = df_show[df_show["Price_Val"] > 0].reset_index(drop=True)
+        filtered_price_df = df_show[df_show["Price_Val"] > 0].reset_index(drop=True)
+        if filtered_price_df.empty and not df_show.empty:
+            st.warning("⚠️ 시세 필터 결과가 0개입니다. SML 계산 결과 자체는 존재하므로 전체 결과를 표시합니다. 아래 진단에서 시세 조회 실패 원인을 확인하세요.")
+        else:
+            df_show = filtered_price_df
 
     if pass_only:
         df_show = df_show[df_show["AD_Pass"] == True].reset_index(drop=True)
-        
-    latest_filing_str = df_show["Filing_Date"].max() if "Filing_Date" in df_show.columns else "2026-08-14"
+
+    if df_show.empty and not raw_result_df.empty:
+        st.warning("⚠️ 현재 필터 조합으로 표시할 종목이 없습니다. 필터를 해제하면 전체 SML 결과를 볼 수 있습니다.")
+        st.stop()
+
+    latest_filing_str = df_show["Filing_Date"].max() if "Filing_Date" in df_show.columns and not df_show.empty else "2026-08-14"
     prev_f_date, next_f_date, d_days = calc_next_filing_deadline(latest_filing_str)
     
     col_d1, col_d2, col_d3 = st.columns(3)

@@ -476,8 +476,8 @@ def download_price_history(tickers, start=None, end=None, period=None):
             kw["end"] = end
         return kw
 
-    # 1차: 40개씩 배치. 큰 배치보다 실패/Rate limit에 강하다.
-    for i in range(0, len(tickers), 40):
+    # 1차: 100개씩 배치. HTTP 요청 수를 줄이면서도 Yahoo rate-limit에 과도하게 노출되지 않도록 한다.
+    for i in range(0, len(tickers), 100):
         chunk = list(tickers[i:i+40])
         try:
             dl = yf.download(**_kwargs(chunk, threads=False))
@@ -493,9 +493,12 @@ def download_price_history(tickers, start=None, end=None, period=None):
         except Exception:
             pass
 
-    # 2차: 배치에서 빠진 ticker만 개별 호출.
+    # 2차: 배치에서 빠진 ticker만 개별 재시도한다.
+    # 중요: 3,000~4,000개를 개별 HTTP 요청으로 다시 보내면 앱이 수 분~수십 분 멈춘 것처럼 보일 수 있다.
+    # 따라서 개별 재시도에는 상한을 둔다. 가격 데이터가 없는/잘못된 ticker를 무한 재시도하지 않는다.
     missing = [tk for tk in tickers if tk not in out]
-    for tk in missing:
+    retry_limit = min(len(missing), 300)
+    for tk in missing[:retry_limit]:
         try:
             dl = yf.download(**_kwargs(tk, threads=False))
             h = _normalize_yf_history(dl, tk)
@@ -712,7 +715,10 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
             resolved.append((c, d, tk))
             if ri % 100 == 0 or ri == len(tot):
                 _progress(40 + 10 * ri / max(len(tot), 1))
-        _status(f"🧭 티커 매칭 완료 · SEC/로컬 {local_match_count:,} · Yahoo 보조 {yahoo_fallback_hits:,}/{yahoo_fallback_used:,} · 미매칭 {sum(1 for x in resolved if x[2]=='-'):,}")
+        unresolved_count = sum(1 for x in resolved if x[2] == "-")
+        resolved_count = len(resolved) - unresolved_count
+        _status(f"✅ **[3/5 티커 매칭 단계 완료]** 확보 {resolved_count:,} · SEC/로컬 {local_match_count:,} · Yahoo 보조 {yahoo_fallback_hits:,}/{yahoo_fallback_used:,} · 미매칭 {unresolved_count:,}")
+        _progress(50)
         resolved = [x for x in resolved if x[2] != "-"]
         # 동일 Yahoo ticker가 중복되는 경우 첫 관측치만 사용
         seen_tickers = set()
@@ -726,7 +732,7 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
         tickers = list(dict.fromkeys([x[2] for x in resolved]))
         start_dt = pd.Timestamp(period_date) - pd.Timedelta(days=430)
         end_dt = pd.Timestamp(period_date) + pd.Timedelta(days=320)
-        _status(f"📈 **[4/5 시세 다운로드]** {period} 유효 티커 {len(tickers):,}개 + SPY 과거 시세를 조회하는 중")
+        _status(f"📈 **[4/5 시세 데이터 조회 시작]** {period} 유효 티커 {len(tickers):,}개 + SPY 과거 시세를 조회합니다. 티커 매칭은 이미 끝났습니다.")
         _progress(52)
         price_hist = download_backtest_price_history(
             tickers, start=start_dt.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d")
@@ -734,6 +740,10 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
         spy = download_backtest_spy_history(
             start=start_dt.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d")
         )
+        price_ok = len(price_hist)
+        price_missing = max(len(tickers) - price_ok, 0)
+        _status(f"📊 **[4/5 시세 조회 완료]** 가격 확보 {price_ok:,}/{len(tickers):,} · 시세 미확보 {price_missing:,} · 이제 SML/CMF 계산을 진행합니다.")
+        _progress(60)
 
         # CMF는 반드시 공통 정보일(period_date) 직전 거래일까지의 10거래일로 계산한다.
         # period_date는 해당 분기의 선택 기관 중 가장 늦게 공개된 13F filing date이므로,

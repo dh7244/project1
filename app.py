@@ -77,45 +77,106 @@ def load_sec_ticker_directory():
 def get_name_dict():
     return load_sec_ticker_directory()
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=False)
 def search_yahoo_ticker(query_name):
-    clean_q = re.sub(r'[^a-zA-Z0-9 ]', ' ', query_name).strip()
-    words = clean_q.split()[:3]
+    # 최후의 fallback만 사용한다. 10,000개 후보를 Yahoo Search API에
+    # 하나씩 보내면 rate-limit/timeout으로 분석이 멈출 수 있으므로
+    # 이 함수는 아래 resolve_ticker_advanced에서 제한적으로 호출한다.
+    clean_q = re.sub(r"[^a-zA-Z0-9 ]", " ", str(query_name)).strip()
+    words = clean_q.split()[:4]
     if not words:
         return "-"
     search_str = " ".join(words)
-    url = f"https://query2.finance.yahoo.com/v1/finance/search?q={search_str}&quotesCount=1&newsCount=0"
+    url = f"https://query2.finance.yahoo.com/v1/finance/search?q={search_str}&quotesCount=5&newsCount=0"
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=3)
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2)
         if r.status_code == 200:
             quotes = r.json().get("quotes", [])
-            if quotes and "symbol" in quotes[0]:
-                sym = str(quotes[0]["symbol"]).upper().strip()
-                # Yahoo 심볼은 BRK-B, BF-B처럼 '-'를 포함할 수 있다.
-                if 1 <= len(sym) <= 15 and re.fullmatch(r"[A-Z0-9.\-^=]+", sym):
+            for q in quotes:
+                sym = str(q.get("symbol", "")).upper()
+                qt = str(q.get("quoteType", "")).upper()
+                if sym and qt in ("EQUITY", "ETF"):
                     return sym
     except Exception:
         pass
     return "-"
 
-def resolve_ticker_advanced(cusip, name):
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def build_sec_name_index():
+    """SEC 공식 company_tickers를 issuer명 매칭용 역색인으로 만든다."""
+    data = get_name_dict()
+    index = {}
+    suffixes = {
+        "INC", "INCORPORATED", "CORP", "CORPORATION", "CO", "COMPANY",
+        "LTD", "LIMITED", "PLC", "LLC", "LP", "HOLDINGS", "HOLDING",
+        "GROUP", "CLASS", "COMMON", "SHARES", "THE"
+    }
+    for nm, tk in data.items():
+        tokens = [x for x in re.findall(r"[A-Z0-9]+", nm) if x not in suffixes and len(x) >= 3]
+        for token in set(tokens):
+            index.setdefault(token, set()).add((nm, tk, len(tokens)))
+    return index
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def resolve_ticker_local(cusip, name):
+    """네트워크 없이 CUSIP/SEC 공식 issuer명으로 ticker를 최대한 결정한다."""
     if cusip in COMMON_CUSIP_MAP:
         return COMMON_CUSIP_MAP[cusip]
-    nm_upper = name.upper()
+    nm_upper = str(name).upper()
     for kw, sym in EXPLICIT_NAME_MAP.items():
         if kw in nm_upper:
             return sym
-    clean_n = re.sub(r'[^A-Z0-9]', '', nm_upper)
 
-    # 1차: 분석 실행 시 한 번만 lazy-load하는 SEC 공식 ticker directory.
-    # 앱 시작 시에는 호출하지 않으므로 첫 화면은 네트워크와 무관하다.
-    name_dict = get_name_dict()
-    if clean_n in name_dict:
-        return name_dict[clean_n]
+    data = get_name_dict()
+    clean = re.sub(r"[^A-Z0-9]", "", nm_upper)
+    if clean in data:
+        return data[clean]
 
-    # 2차 fallback: SEC 명칭이 정확히 일치하지 않을 때만 Yahoo 검색.
-    found_tk = search_yahoo_ticker(name)
-    return found_tk if found_tk != "-" else "-"
+    # 법인 suffix 제거 후 token 역색인으로 후보를 크게 줄인다.
+    base = re.sub(r"\b(INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LTD|LIMITED|PLC|LLC|LP|HOLDINGS?|GROUP)\b", " ", nm_upper)
+    # token 역색인으로 후보를 크게 줄인 뒤 가장 높은 overlap을 선택한다.
+    tokens = set(re.findall(r"[A-Z0-9]+", base))
+    tokens = {t for t in tokens if len(t) >= 3}
+    idx = build_sec_name_index()
+    candidates = {}
+    for token in tokens:
+        for sec_nm, tk, n_tok in idx.get(token, ()):
+            candidates[(sec_nm, tk)] = n_tok
+    if candidates:
+        best = None
+        best_score = -1.0
+        for (sec_nm, tk), n_tok in candidates.items():
+            sec_tokens = set(re.findall(r"[A-Z0-9]+", sec_nm)) - {"INC","INCORPORATED","CORP","CORPORATION","CO","COMPANY","LTD","LIMITED","PLC","LLC","LP","HOLDINGS","HOLDING","GROUP"}
+            inter = len(tokens & sec_tokens)
+            union = len(tokens | sec_tokens)
+            score = (inter / union if union else 0.0) + (0.15 if tokens and tokens.issubset(sec_tokens) else 0.0)
+            if inter >= 1 and score > best_score:
+                best_score = score
+                best = tk
+        # 부분 일치가 단 하나뿐인 경우에는 오매칭 위험이 높으므로
+        # 충분히 높은 유사도에서만 자동 채택한다.
+        if best is not None and best_score >= 0.55:
+            return best
+    return "-"
+
+
+def resolve_ticker_advanced(cusip, name, allow_yahoo=False):
+    """안전 우선 ticker resolver.
+
+    1) CUSIP/명시 매핑
+    2) SEC 공식 ticker directory exact/정규화/엄격 fuzzy
+    3) allow_yahoo=True인 소수의 미매칭 후보에 한해 Yahoo fallback
+
+    Yahoo는 대량 호출하지 않고 상한을 호출부에서 관리한다.
+    """
+    tk = resolve_ticker_local(cusip, name)
+    if tk != "-":
+        return tk
+    if allow_yahoo:
+        return search_yahoo_ticker(name)
+    return "-"
 
 def calc_next_filing_deadline(latest_date_str):
     try:
@@ -634,10 +695,24 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
         # 전체 매수 후보를 SML universe로 만든 뒤 SML percentile을 계산한다.
         _status(f"🔎 **[3/5 티커 매칭]** {period} 후보 {len(tot):,}개를 전체 SML 유니버스로 유지하며 매칭 중")
         resolved = []
+        yahoo_fallback_budget = 300
+        yahoo_fallback_used = 0
+        yahoo_fallback_hits = 0
+        local_match_count = 0
         for ri, (c, d) in enumerate(tot.items(), 1):
-            resolved.append((c, d, resolve_ticker_advanced(c, d["name"])))
+            local_tk = resolve_ticker_local(c, d["name"])
+            allow_yahoo = (local_tk == "-" and yahoo_fallback_used < yahoo_fallback_budget)
+            if allow_yahoo:
+                yahoo_fallback_used += 1
+            tk = resolve_ticker_advanced(c, d["name"], allow_yahoo=allow_yahoo)
+            if local_tk != "-":
+                local_match_count += 1
+            if allow_yahoo and tk != "-":
+                yahoo_fallback_hits += 1
+            resolved.append((c, d, tk))
             if ri % 100 == 0 or ri == len(tot):
                 _progress(40 + 10 * ri / max(len(tot), 1))
+        _status(f"🧭 티커 매칭 완료 · SEC/로컬 {local_match_count:,} · Yahoo 보조 {yahoo_fallback_hits:,}/{yahoo_fallback_used:,} · 미매칭 {sum(1 for x in resolved if x[2]=='-'):,}")
         resolved = [x for x in resolved if x[2] != "-"]
         # 동일 Yahoo ticker가 중복되는 경우 첫 관측치만 사용
         seen_tickers = set()
@@ -1031,13 +1106,26 @@ if run_btn:
         # 점수 계산 전에 후보를 잘라내지 않는다. 이것이 SML percentile의 핵심이다.
         resolved = []
         total_candidates = len(tot)
+        yahoo_fallback_budget = 300
+        yahoo_fallback_used = 0
+        yahoo_fallback_hits = 0
+        local_match_count = 0
         for ridx, (cusip, d) in enumerate(tot.items()):
             if ridx % 50 == 0:
                 status_box.markdown(f"🔎 **티커 매칭 {ridx}/{total_candidates}** — 전체 후보를 SML 유니버스로 유지합니다.")
-            tk_resolved = resolve_ticker_advanced(cusip, d["name"])
+            local_tk = resolve_ticker_local(cusip, d["name"])
+            allow_yahoo = (local_tk == "-" and yahoo_fallback_used < yahoo_fallback_budget)
+            if allow_yahoo:
+                yahoo_fallback_used += 1
+            tk_resolved = resolve_ticker_advanced(cusip, d["name"], allow_yahoo=allow_yahoo)
+            if local_tk != "-":
+                local_match_count += 1
+            if allow_yahoo and tk_resolved != "-":
+                yahoo_fallback_hits += 1
             if tk_resolved == "-":
                 ticker_failures.append(d["name"])
             resolved.append((cusip, d, tk_resolved))
+        status_box.markdown(f"🧭 **티커 매칭 완료** · SEC/로컬 {local_match_count:,} · Yahoo 보조 {yahoo_fallback_hits:,}/{yahoo_fallback_used:,} · 미매칭 {sum(1 for x in resolved if x[2]=='-'):,}")
         resolved = [x for x in resolved if x[2] != "-"]
         tickers = list(dict.fromkeys([tk for _, _, tk in resolved]))
         market_hist = download_price_history(tickers, period="1y")

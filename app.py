@@ -327,6 +327,7 @@ def calc_score(df, sector_neutral=False):
     raw_sml = d["Inst_Contrib"] + d["Lag_Contrib"]
     d["SML_Score"] = raw_sml.round(1).fillna(50.0)
 
+    # 💡 [신규] 투자 시그널 판정 로직: 70점 / 55점 기준 + 세부 유형 라벨링
     sigs = []
     for _, r in d.iterrows():
         p_val = r["Price_Val"]
@@ -338,12 +339,20 @@ def calc_score(df, sector_neutral=False):
             
         sc = r["SML_Score"]
         ad = r["AD_Pass"]
-        if sc >= 75.0 and ad:
-            sigs.append("🟢 STRONG_BUY")
-        elif sc >= 60.0 and ad:
-            sigs.append("🔵 ACCUMULATE")
-        elif sc >= 60.0 and not ad:
-            sigs.append("🟡 WATCH_LAG")
+        i_c = r["Inst_Contrib"]
+        l_c = r["Lag_Contrib"]
+
+        if sc >= 70.0 and ad:
+            if i_c >= 35.0:
+                sigs.append("🟢 STRONG_BUY (수급주도)")
+            elif l_c >= 28.0:
+                sigs.append("🟢 STRONG_BUY (역발상바닥)")
+            else:
+                sigs.append("🟢 STRONG_BUY (균형성장)")
+        elif sc >= 55.0 and ad:
+            sigs.append("🔵 ACCUMULATE (분할매집)")
+        elif sc >= 55.0 and not ad:
+            sigs.append("🟡 WATCH_LAG (매집주의)")
         else:
             sigs.append("⚪ NEUTRAL")
     d["Signal"] = sigs
@@ -360,22 +369,16 @@ with st.expander("📖 SML 점수 및 퀀트 팩터(M1·M2·M3) 상세 가이드
         """
         ### 1. SML 점수(Smart Money Lag Score)란?
         * **개념**: **"스마트머니(월가 대형 기관)의 집중 매수가 유입되었음에도, 주가는 아직 오르지 않고 뒤처진(Lag) 저평가 종목"**을 발굴하는 퀀트 앙상블 스코어입니다 (100점 만점).
-        * **핵심 가설**: 거대 자본을 굴리는 전문 기관들은 장기간에 걸쳐 분할 매집하며, 공시 이후 시장의 관심이 쏠리면서 뒤늦게 주가가 제자리를 찾아가는 '시차 반등(Lag Reversal)' 현상을 노립니다.
-        * **종합 공식 (대형주 우대 배분)**: 
+        * **종합 공식**: 
           $$\\text{SML 점수} = \\underbrace{(\\text{수급 점수} \\times 0.55)}_{\\text{스마트머니 수급 기여도 (최대 55점)}} + \\underbrace{(\\text{소외 점수} \\times 0.45)}_{\\text{가격 저평가/래깅 기여도 (최대 45점)}}$$
         * **앙상블 서브 모델 가중치**: $0.40 \\times M_1 + 0.35 \\times M_2 + 0.25 \\times M_3$
 
         ---
-        ### 2. 세부 팩터 모델(M1, M2, M3)의 작동 원리 (주식 수 왜곡 배제)
-        * **M1 (선형 스케일 / 40%)**: 유입 대금($M)과 참여 기관 수의 절대 규모를 직접 반영하여 **초대형 매집주/대형 우량주**에 높은 가점을 부여합니다.
-        * **M2 (백분위 순위 / 35%)**: 기관 수와 유입 대금의 상대 순위(상위 %)로 변환하여 팩터 밸런스를 유지합니다.
-        * **M3 (Z-Score 정규화 / 25%)**: 기관 수 및 유입 대금의 평균 대비 통계적 이상치(Spike)를 포착합니다.
-
-        ---
-        ### 3. 마이크로스트럭처(A/D Line 매집강도)와 실전 투자 시그널
-        13F 공시는 분기 마감 후 최대 45일 뒤에 제출되므로 **'공시 시점에는 이미 기관이 차익실현 중일 수 있는 지연 리스크'**를 방지하기 위해 최근 10거래일 **A/D Line(축적/분산선)**의 자금 유출입을 기술적으로 교차 검증합니다.
-        * **A/D 10일 변화율**: 최근 2주간 누적 자금 유입선이 상승했는지를 백분율(%)로 추적.
-        * **평균 CLV(장중 매집 비율)**: -1.0(최저가 마감/매도 투하) ~ +1.0(최고가 마감/강한 매집) 사이에서 장중 매수세 우위를 측정.
+        ### 2. 투자 시그널 기준 (대형주 개편 모델 최적화)
+        * **🟢 STRONG_BUY (적극 매수)**: **70.0점 이상** + `A/D PASS` (수급주도형 / 역발상바닥형 / 균형성장형 분류)
+        * **🔵 ACCUMULATE (분할 매집)**: **55.0점 ~ 69.9점** + `A/D PASS`
+        * **🟡 WATCH_LAG (단기 관망)**: **55.0점 이상**이나 `A/D FAIL` (최근 2주간 차익실현 출회 주의)
+        * **⚪ NEUTRAL (중립/대기)**: 55.0점 미만
         """
     )
 
@@ -798,6 +801,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         # --- 종목 상세 분석 및 기여도 분해 영역 ---
         st.subheader(f"🔍 [{current_tk}] {sel_row['Name']} 심층 팩터 분석 & 매수 기관")
         
+        # 상단 핵심 기여도 메트릭 카드
         col_m1, col_m2, col_m3 = st.columns([1.2, 1, 1])
         with col_m1:
             st.metric("종합 SML 점수", f"{sel_row['SML_Score']:.1f} 점", sel_row['Signal'])
@@ -806,25 +810,19 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         with col_m3:
             st.metric("📉 가격 소외도 (45% 축)", f"{sel_row['Lag_Score']:.1f} 점", f"기여: +{sel_row['Lag_Contrib']:.1f}점 / 45.0")
 
+        # 수급 주도 vs 바닥 반등 밸런스 바
         inst_ratio = int((sel_row['Inst_Contrib'] / max(sel_row['SML_Score'], 0.1)) * 100)
         lag_ratio = 100 - inst_ratio
         st.caption(f"⚖️ **상승 모멘텀 원천 분석**: 수급 주도형 `{inst_ratio}%` vs 바닥 반등형 `{lag_ratio}%`")
         st.progress(min(max(inst_ratio / 100.0, 0.0), 1.0))
 
         with st.expander("📐 SML 점수 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
-            # 💡 문법 오류가 발생하지 않도록 format 문자열로 안전하게 처리
-            st.markdown(
-                """
-                **점수 분해 공식**:  
-                $$\\text{{SML 점수}} = ({inst_s:.1f} \\times 0.55) + ({lag_s:.1f} \\times 0.45) = \\mathbf{{{inst_c:+.1f}\\text{{점 (수급)}}} \\mathbf{{{lag_c:+.1f}\\text{{점 (소외)}}} = \\mathbf{{{tot:.1f}\\text{{점}}}$$
-                """.format(
-                    inst_s=sel_row["Inst_Score"],
-                    lag_s=sel_row["Lag_Score"],
-                    inst_c=sel_row["Inst_Contrib"],
-                    lag_c=sel_row["Lag_Contrib"],
-                    tot=sel_row["SML_Score"]
-                )
+            calc_text = (
+                "**점수 분해 공식**:\n\n"
+                f"$$\\text{{SML 점수}} = ({sel_row['Inst_Score']:.1f} \\times 0.55) + ({sel_row['Lag_Score']:.1f} \\times 0.45) = "                 f"\\mathbf{{+{sel_row['Inst_Contrib']:.1f}\\text{{점 (수급)}}} + \\mathbf{{+{sel_row['Lag_Contrib']:.1f}\\text{{점 (소외)}}} = "                 f"\\mathbf{{{sel_row['SML_Score']:.1f}\\text{{점}}}}$$"
             )
+            st.markdown(calc_text)
+
             b_col1, b_col2 = st.columns(2)
             with b_col1:
                 st.markdown(f"##### 🏛️ 스마트머니 수급 지표 (기여: +{sel_row['Inst_Contrib']:.1f}점)")

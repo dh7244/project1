@@ -279,43 +279,53 @@ def calc_score(df, sector_neutral=False):
     if sector_neutral and "Sector" in d.columns:
         d["Rel_Return"] = d.groupby("Sector")["Rel_Return"].transform(lambda s: s - s.mean())
 
+    # 원천 팩터 Min-Max 정규화
     d["Factor_Inst_Count"] = min_max(d["Fund_Count"]).round(1)
     d["Factor_Inst_Inflow"] = min_max(d["Inflow_M"]).round(1)
-    d["Factor_Inst_Shares"] = min_max(d["Shares_Sum"]).round(1)
     d["Factor_Lag_Return"] = min_max(d["Rel_Return"], invert=True).round(1)
     d["Factor_Lag_Dist52W"] = min_max(d["Dist_52W"], invert=True).round(1)
 
-    m1_inst = (
-        0.35 * d["Factor_Inst_Count"]
-        + 0.35 * d["Factor_Inst_Inflow"]
-        + 0.30 * d["Factor_Inst_Shares"]
-    )
+    # 1) M1 모델 (기관수 50% + 유입대금 50%)
+    m1_inst = 0.50 * d["Factor_Inst_Count"] + 0.50 * d["Factor_Inst_Inflow"]
+    m1_lag = 0.60 * d["Factor_Lag_Return"] + 0.40 * d["Factor_Lag_Dist52W"]
+    d["M1"] = (0.55 * m1_inst + 0.45 * m1_lag).round(1).fillna(50.0)
+
+    # 2) M2 모델 (기관수 순위 50% + 유입대금 순위 50%)
     m2_inst = (
         d["Fund_Count"].rank(pct=True).fillna(0.5) * 50.0
         + d["Inflow_M"].rank(pct=True).fillna(0.5) * 50.0
-    )
-    
-    f_counts = d["Fund_Count"].fillna(0).to_numpy()
-    z_inst = stats.zscore(f_counts) if len(f_counts) > 1 and np.std(f_counts) > 0 else np.zeros(len(d))
-
-    m1_lag = (
-        0.60 * d["Factor_Lag_Return"]
-        + 0.40 * d["Factor_Lag_Dist52W"]
     )
     m2_lag = (
         (-d["Rel_Return"]).rank(pct=True).fillna(0.5) * 50.0
         + (-d["Dist_52W"]).rank(pct=True).fillna(0.5) * 50.0
     )
-    
+    d["M2"] = (0.55 * m2_inst + 0.45 * m2_lag).round(1).fillna(50.0)
+
+    # 3) M3 모델 (기관수 Z-Score 50% + 유입대금 Z-Score 50%)
+    f_counts = d["Fund_Count"].fillna(0).to_numpy()
+    z_cnt = stats.zscore(f_counts) if len(f_counts) > 1 and np.std(f_counts) > 0 else np.zeros(len(d))
+    f_inflows = d["Inflow_M"].fillna(0).to_numpy()
+    z_inf = stats.zscore(f_inflows) if len(f_inflows) > 1 and np.std(f_inflows) > 0 else np.zeros(len(d))
+    z_inst = 0.50 * np.nan_to_num(z_cnt) + 0.50 * np.nan_to_num(z_inf)
+
     r_rets = d["Rel_Return"].fillna(0).to_numpy()
     z_lag = -stats.zscore(r_rets) if len(r_rets) > 1 and np.std(r_rets) > 0 else np.zeros(len(d))
 
-    d["M1"] = (0.55 * m1_inst + 0.45 * m1_lag).round(1).fillna(50.0)
-    d["M2"] = (0.55 * m2_inst + 0.45 * m2_lag).round(1).fillna(50.0)
-    z_comp = 0.55 * np.nan_to_num(z_inst) + 0.45 * np.nan_to_num(z_lag)
+    m3_inst = stats.norm.cdf(z_inst) * 100.0
+    m3_lag = stats.norm.cdf(z_lag) * 100.0
+    z_comp = 0.55 * z_inst + 0.45 * z_lag
     d["M3"] = (stats.norm.cdf(z_comp) * 100.0).round(1)
-    
-    raw_sml = 0.40 * d["M1"] + 0.35 * d["M2"] + 0.25 * d["M3"]
+
+    # 💡 [신규] 기관수급(55% 축) vs 가격소외도(45% 축) 기여도 분리 계산
+    # 대형주 배분: M1(40%) + M2(35%) + M3(25%)
+    d["Inst_Score"] = (0.40 * m1_inst + 0.35 * m2_inst + 0.25 * m3_inst).round(1)
+    d["Lag_Score"] = (0.40 * m1_lag + 0.35 * m2_lag + 0.25 * m3_lag).round(1)
+
+    # 기여 환산 점수 (수급 55점 만점, 소외 45점 만점)
+    d["Inst_Contrib"] = (d["Inst_Score"] * 0.55).round(1)
+    d["Lag_Contrib"] = (d["Lag_Score"] * 0.45).round(1)
+
+    raw_sml = d["Inst_Contrib"] + d["Lag_Contrib"]
     d["SML_Score"] = raw_sml.round(1).fillna(50.0)
 
     sigs = []
@@ -344,23 +354,22 @@ def calc_score(df, sector_neutral=False):
 
 # --- UI 레이아웃 ---
 st.title("🎯 SEC 13F SML 레이더 v1.5")
-st.caption("스마트머니 래그(SML) 분석 | 대형주 우대 앙상블 | 마이크로스트럭처(A/D Line) 수치화 검증 | 공시 일정 모니터링")
+st.caption("스마트머니 래그(SML) 분석 | 수급 vs 소외 기여도 분해 | 대형주 우대 앙상블 | 공시 일정 모니터링")
 
 with st.expander("📖 SML 점수 및 퀀트 팩터(M1·M2·M3) 상세 가이드 (필독)", expanded=False):
     st.markdown(
         """
         ### 1. SML 점수(Smart Money Lag Score)란?
         * **개념**: **"스마트머니(월가 대형 기관)의 집중 매수가 유입되었음에도, 주가는 아직 오르지 않고 뒤처진(Lag) 저평가 종목"**을 발굴하는 퀀트 앙상블 스코어입니다 (100점 만점).
-        * **핵심 가설**: 거대 자본을 굴리는 전문 기관들은 장기간에 걸쳐 분할 매집하며, 공시 이후 시장의 관심이 쏠리면서 뒤늦게 주가가 제자리를 찾아가는 '시차 반등(Lag Reversal)' 현상을 노립니다.
         * **종합 공식 (대형주 우대 배분)**: 
-          $$\\text{SML 점수} = 0.40 \\times M_1 + 0.35 \\times M_2 + 0.25 \\times M_3$$
-        * **내부 평가 비중**: 모든 모델은 **기관 수급 강도(55%)** + **주가 저평가/소외도(45%)**를 결합하여 산출됩니다.
+          $$\\text{SML 점수} = \\underbrace{(\\text{수급 점수} \\times 0.55)}_{\\text{스마트머니 수급 기여도 (최대 55점)}} + \\underbrace{(\\text{소외 점수} \\times 0.45)}_{\\text{가격 저평가/래깅 기여도 (최대 45점)}}$$
+        * **앙상블 서브 모델 가중치**: $0.40 \\times M_1 + 0.35 \\times M_2 + 0.25 \\times M_3$
 
         ---
-        ### 2. 세부 팩터 모델(M1, M2, M3)의 작동 원리
-        * **M1 (선형 스케일 / 40%)**: 수천억~수조 원 규모의 압도적인 금액/주식이 유입된 **초대형 매집주/대형 우량주**에 높은 가점을 부여합니다.
-        * **M2 (백분위 순위 / 35%)**: 절대 금액 차이를 배제하고 상대 순위(상위 %)로 변환하여 팩터 밸런스를 유지합니다.
-        * **M3 (Z-Score 정규화 / 25%)**: 평균 대비 통계적으로 이례적인 **자금 집중 징후(Spike)**를 포착합니다.
+        ### 2. 세부 팩터 모델(M1, M2, M3)의 작동 원리 (주식 수 왜곡 배제)
+        * **M1 (선형 스케일 / 40%)**: 유입 대금($M)과 참여 기관 수의 절대 규모를 직접 반영하여 **초대형 매집주/대형 우량주**에 높은 가점을 부여합니다.
+        * **M2 (백분위 순위 / 35%)**: 기관 수와 유입 대금의 상대 순위(상위 %)로 변환하여 팩터 밸런스를 유지합니다.
+        * **M3 (Z-Score 정규화 / 25%)**: 기관 수 및 유입 대금의 평균 대비 통계적 이상치(Spike)를 포착합니다.
 
         ---
         ### 3. 마이크로스트럭처(A/D Line 매집강도)와 실전 투자 시그널
@@ -483,7 +492,6 @@ if run_btn:
                 tot[c]["inflow"] += diff_v
                 tot[c]["shares"] += diff_s
                 
-                # 💡 직전 공시 당시 보유여부, 직전 주식수, 직전 평가액 보존
                 tot[c]["details"].append({
                     "fund": r["fund"],
                     "type": buy_type,
@@ -616,7 +624,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
             return f"🔵 -{abs(v):.2f}%"
 
     # ==========================================
-    # 탑픽 5 (Top Picks 5) 컴팩트 요약표 모듈
+    # 탑픽 5 (Top Picks 5) 모듈
     # ==========================================
     st.divider()
     st.subheader("⭐ 퀀트 탑픽 5선 (Quant Top Picks)")
@@ -732,17 +740,20 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
 
     st.divider()
 
+    # ==========================================
+    # 메인 퀀트 테이블 (수급 vs 소외도 컬럼 탑재)
+    # ==========================================
     st.subheader(f"📋 퀀트 랭킹 & 공시일 대비 성과 (총 {len(df_show)}개 종목)")
-    st.caption("💡 **표에서 확인하고 싶은 기업의 행을 터치/클릭**하면 바로 아래에 상세 팩터 분석 및 매수 기관 정보가 연동됩니다.")
+    st.caption("💡 **수급점수 또는 소외도 헤더를 클릭**하면 자금 유입 최상위주 또는 바닥 소외주 순서로 바로 재정렬할 수 있습니다.")
 
     table_df = df_show[[
-        "Rank", "Ticker", "Name", "SML_Score", "M1", "M2", "M3",
+        "Rank", "Ticker", "Name", "SML_Score", "Inst_Score", "Lag_Score",
         "Signal", "Base_Price", "Price_Val", "Price_Chg", "Pct_Chg",
         "Fund_Count", "Inflow_M"
     ]].copy()
     
     table_df.columns = [
-        "순위", "티커", "기업명", "SML 점수", "M1", "M2", "M3",
+        "순위", "티커", "기업명", "SML 점수", "수급점수(55%)", "소외도(45%)",
         "투자시그널", "공시일주가($)", "현재가($)", "공시후변동($)", "공시후변동률(%)",
         "기관수", "유입액($M)"
     ]
@@ -759,9 +770,8 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         column_config={
             "순위": st.column_config.NumberColumn(format="%d"),
             "SML 점수": st.column_config.NumberColumn(format="%.1f 점"),
-            "M1": st.column_config.NumberColumn(format="%.1f"),
-            "M2": st.column_config.NumberColumn(format="%.1f"),
-            "M3": st.column_config.NumberColumn(format="%.1f"),
+            "수급점수(55%)": st.column_config.NumberColumn(format="%.1f 점"),
+            "소외도(45%)": st.column_config.NumberColumn(format="%.1f 점"),
             "공시일주가($)": st.column_config.NumberColumn(format="$%.2f"),
             "현재가($)": st.column_config.NumberColumn(format="$%.2f"),
             "공시후변동($)": st.column_config.TextColumn(),
@@ -785,36 +795,39 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
 
         st.divider()
         
-        # --- 종목 상세 분석 및 팩터 비중 분해 영역 ---
+        # --- 종목 상세 분석 및 기여도 분해 영역 ---
         st.subheader(f"🔍 [{current_tk}] {sel_row['Name']} 심층 팩터 분석 & 매수 기관")
         
-        col_info1, col_info2, col_info3, col_info4 = st.columns(4)
-        with col_info1:
+        # 💡 상단 핵심 기여도 메트릭 카드 3분할
+        col_m1, col_m2, col_m3 = st.columns([1.2, 1, 1])
+        with col_m1:
             st.metric("종합 SML 점수", f"{sel_row['SML_Score']:.1f} 점", sel_row['Signal'])
-        with col_info2:
-            st.metric("M1 (선형 스케일)", f"{sel_row['M1']:.1f} 점", "앙상블 비중 40% (체급 우대)")
-        with col_info3:
-            st.metric("M2 (백분위 순위)", f"{sel_row['M2']:.1f} 점", "앙상블 비중 35%")
-        with col_info4:
-            st.metric("M3 (Z-Score 정규화)", f"{sel_row['M3']:.1f} 점", "앙상블 비중 25%")
+        with col_m2:
+            st.metric("🏛️ 기관 수급 점수 (55% 축)", f"{sel_row['Inst_Score']:.1f} 점", f"기여: +{sel_row['Inst_Contrib']:.1f}점 / 55.0")
+        with col_m3:
+            st.metric("📉 가격 소외도 (45% 축)", f"{sel_row['Lag_Score']:.1f} 점", f"기여: +{sel_row['Lag_Contrib']:.1f}점 / 45.0")
+
+        # 💡 수급 주도 vs 바닥 반등 밸런스 바
+        inst_ratio = int((sel_row['Inst_Contrib'] / max(sel_row['SML_Score'], 0.1)) * 100)
+        lag_ratio = 100 - inst_ratio
+        st.caption(f"⚖️ **상승 모멘텀 원천 분석**: 수급 주도형 `{inst_ratio}%` vs 바닥 반등형 `{lag_ratio}%`")
+        st.progress(min(max(inst_ratio / 100.0, 0.0), 1.0))
 
         with st.expander("📐 SML 점수 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
             st.markdown(
-                """
-                **SML 점수 앙상블 공식 (대형주 우대 배분)**:  
-                $$\\text{SML 점수} = 0.40 \\times M_1 + 0.35 \\times M_2 + 0.25 \\times M_3$$
-                각 서브 모델($M_1, M_2, M_3$)은 **스마트머니 수급 점수(55%)**와 **주가 래깅/소외 점수(45%)**의 결합으로 산출됩니다.
+                f"""
+                **점수 분해 공식**:  
+                $$\\text{{SML 점수}} = \\underbrace{{({sel_row['Inst_Score']:.1f} \\times 0.55)}_{{\\mathbf{{+{sel_row['Inst_Contrib']:.1f}\\text{{점 (수급 기여)}}}}}} + \\underbrace{{({sel_row['Lag_Score']:.1f} \\times 0.45)}_{{\\mathbf{{+{sel_row['Lag_Contrib']:.1f}\\text{{점 (소외 기여)}}}}}} = \\mathbf{{{sel_row['SML_Score']:.1f}\\text{{점}}}}$$
                 """
             )
             b_col1, b_col2 = st.columns(2)
             with b_col1:
-                st.markdown("##### 🏛️ 스마트머니 수급 지표 (전체 비중 55%)")
-                st.write(f"- **매수 기관 수 (비중 35%)**: {sel_row['Fund_Count']}개 사")
-                st.write(f"- **순유입 대금 (비중 35%)**: ${sel_row['Inflow_M']:,.1f} M")
-                st.write(f"- **신규/추가 주식수 (비중 30%)**: {sel_row['Shares_Sum']:,} 주")
+                st.markdown(f"##### 🏛️ 스마트머니 수급 지표 (기여: +{sel_row['Inst_Contrib']:.1f}점)")
+                st.write(f"- **매수 기관 수 (비중 50%)**: {sel_row['Fund_Count']}개 사")
+                st.write(f"- **순유입 대금 (비중 50%)**: ${sel_row['Inflow_M']:,.1f} M")
                 
             with b_col2:
-                st.markdown("##### 📉 가격 소외 및 매집강도(A/D) 지표 (전체 비중 45%)")
+                st.markdown(f"##### 📉 가격 소외 및 매집강도(A/D) 지표 (기여: +{sel_row['Lag_Contrib']:.1f}점)")
                 if sel_row["Price_Val"] > 0:
                     st.write(f"- **기간 상대 수익률 (비중 60%)**: {sel_row['Rel_Return']:+.1f}%")
                     st.write(f"- **52주 최고가 괴리율 (비중 40%)**: {sel_row['Dist_52W']:.1f}%")
@@ -834,9 +847,7 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
                 else:
                     st.warning("⚠️ 실시간 시세 미조회 종목으로 가격 지표 및 추천 시그널이 산출되지 않았습니다.")
 
-        # ==========================================
-        # ⭐️ [업데이트] 직전 공시 대조 매수 기관 목록
-        # ==========================================
+        # 매수 기관 목록
         st.markdown(f"##### 📋 {sel_row['Name']} 매수 참여 기관 목록 (직전 공시 대조)")
         dt_df = pd.DataFrame(sel_row["details"])
         dt_df = dt_df.sort_values(by="diff_val_m", ascending=False).reset_index(drop=True)

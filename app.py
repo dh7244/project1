@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 import datetime
 import json
+import hashlib
+import pickle
+from pathlib import Path
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -458,6 +461,43 @@ def _normalize_yf_history(h, ticker=None):
         x.index = x.index.tz_localize(None)
     return x.dropna(subset=["Close"], how="all")
 
+BACKTEST_DISK_CACHE = Path.home() / ".13f_sml_backtest_cache"
+BACKTEST_DISK_CACHE.mkdir(parents=True, exist_ok=True)
+BACKTEST_CACHE_VERSION = "v3"
+
+def _price_cache_path(ticker):
+    key = hashlib.sha1(str(ticker).upper().encode("utf-8")).hexdigest()[:20]
+    return BACKTEST_DISK_CACHE / f"{key}.pkl"
+
+def _load_disk_price(ticker, start, end):
+    path = _price_cache_path(ticker)
+    if not path.exists():
+        return None
+    try:
+        h = pd.read_pickle(path)
+        if h is None or h.empty:
+            return None
+        idx = pd.to_datetime(h.index)
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        h.index = idx
+        req_start = pd.Timestamp(start)
+        req_end = pd.Timestamp(end) - pd.Timedelta(days=2)
+        # 과거 요청 범위를 충분히 포함하는 경우에만 재사용한다.
+        if h.index.min() <= req_start + pd.Timedelta(days=3) and h.index.max() >= req_end:
+            return h
+    except Exception:
+        return None
+    return None
+
+def _save_disk_price(ticker, hist):
+    if hist is None or hist.empty:
+        return
+    try:
+        hist.to_pickle(_price_cache_path(ticker))
+    except Exception:
+        pass
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def download_price_history(tickers, start=None, end=None, period=None):
     """Yahoo 시세 수집기. 배치 다운로드 후 누락 ticker만 개별 재시도한다."""
@@ -476,9 +516,9 @@ def download_price_history(tickers, start=None, end=None, period=None):
             kw["end"] = end
         return kw
 
-    # 1차: 40개씩 배치. 큰 배치보다 실패/Rate limit에 강하다.
-    for i in range(0, len(tickers), 40):
-        chunk = list(tickers[i:i+40])
+    # 1차: 80개씩 배치. 백테스트 대량 조회의 HTTP 호출 수를 줄인다.
+    for i in range(0, len(tickers), 80):
+        chunk = list(tickers[i:i+80])
         try:
             dl = yf.download(**_kwargs(chunk, threads=False))
             if isinstance(dl.columns, pd.MultiIndex):
@@ -493,9 +533,9 @@ def download_price_history(tickers, start=None, end=None, period=None):
         except Exception:
             pass
 
-    # 2차: 배치에서 빠진 ticker만 개별 호출.
+    # 2차: 배치에서 빠진 ticker만 개별 호출하되, 무한 재시도하지 않는다.
     missing = [tk for tk in tickers if tk not in out]
-    for tk in missing:
+    for tk in missing[:300]:
         try:
             dl = yf.download(**_kwargs(tk, threads=False))
             h = _normalize_yf_history(dl, tk)
@@ -523,8 +563,30 @@ def download_spy_history(start=None, end=None, period=None):
 
 @st.cache_data(persist=True, show_spinner=False)
 def download_backtest_price_history(tickers, start, end):
-    """백테스트 전용 영구 캐시. 동일 과거 구간은 앱을 재실행해도 재다운로드하지 않는다."""
-    return download_price_history(tickers, start=start, end=end)
+    """백테스트 시세 캐시.
+
+    Streamlit 캐시뿐 아니라 ticker별 디스크 캐시를 사용한다.
+    분기마다 겹치는 과거 구간을 다시 Yahoo에서 받지 않도록 한다.
+    """
+    tickers = tuple(dict.fromkeys(str(t).strip().upper() for t in tickers if t and t != "-"))
+    if not tickers:
+        return {}
+
+    out = {}
+    missing = []
+    for tk in tickers:
+        h = _load_disk_price(tk, start, end)
+        if h is not None:
+            out[tk] = h
+        else:
+            missing.append(tk)
+
+    if missing:
+        fetched = download_price_history(missing, start=start, end=end)
+        for tk, h in fetched.items():
+            out[tk] = h
+            _save_disk_price(tk, h)
+    return out
 
 @st.cache_data(persist=True, show_spinner=False)
 def download_backtest_spy_history(start, end):
@@ -607,6 +669,33 @@ def _hist_features(hist, filing_date):
             "Base_Price": cur}
 
 
+def _backtest_checkpoint_path(funds_to_analyze, periods, market_neutral, forward_days):
+    payload = {
+        "v": BACKTEST_CACHE_VERSION,
+        "funds": sorted((str(k), str(v)) for k, v in funds_to_analyze.items()),
+        "periods": list(periods),
+        "market_neutral": bool(market_neutral),
+        "forward_days": list(forward_days),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    key = hashlib.sha1(raw).hexdigest()[:20]
+    return BACKTEST_DISK_CACHE / f"backtest_{key}.pkl"
+
+def _load_backtest_checkpoint(path):
+    if not path.exists():
+        return {}
+    try:
+        obj = pd.read_pickle(path)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+def _save_backtest_checkpoint(path, completed):
+    try:
+        pd.to_pickle({"completed": completed, "saved_at": datetime.datetime.now().isoformat()}, path)
+    except Exception:
+        pass
+
 def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
                               market_neutral=True, forward_days=(21,63,126),
                               progress_callback=None, status_callback=None):
@@ -638,9 +727,27 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
     if not periods:
         return pd.DataFrame(), pd.DataFrame()
 
+    # 분기 단위 중간저장: 모바일 화면이 꺼지거나 Streamlit 세션이 새로고침되어도
+    # 완료된 분기를 다시 계산하지 않는다.
+    checkpoint_path = _backtest_checkpoint_path(
+        funds_to_analyze, periods, market_neutral, forward_days
+    )
+    checkpoint = _load_backtest_checkpoint(checkpoint_path)
+    completed = checkpoint.get("completed", {}) if isinstance(checkpoint, dict) else {}
+    if not isinstance(completed, dict):
+        completed = {}
+    resumed_count = len(completed)
+    if resumed_count:
+        _status(f"♻️ **백테스트 캐시 복구** · 완료된 {resumed_count}/{len(periods)}개 분기를 재사용합니다.")
+
     quarter_rows = []
     total_periods = len(periods)
     for qi, period in enumerate(sorted(periods)):
+        if period in completed:
+            quarter_rows.extend(completed[period])
+            _status(f"♻️ **[캐시 재사용 {qi+1}/{total_periods}]** {period} 완료분을 건너뜁니다.")
+            _progress(20 + 75 * (qi + 1) / max(total_periods, 1))
+            continue
         _status(f"📊 **[2/5 분기별 수급 집계 {qi+1}/{total_periods}]** {period} 13F 변동을 집계하는 중")
         _progress(20 + 20 * qi / max(total_periods, 1))
         curr_records, prev_records = [], {}
@@ -810,6 +917,11 @@ def run_walk_forward_backtest(funds_to_analyze, n_quarters=6, top_n=100,
                         sr = _forward_return(sh, sp, fd)
                         r[f"FwdAlpha_{fd}D"] = r.get(f"Fwd_{fd}D", np.nan) - sr if pd.notna(sr) else np.nan
             quarter_rows.append(r.to_dict())
+
+        # 한 분기 완료 즉시 저장한다. 다음 분기에서 중단되어도 이 분기는 보존된다.
+        completed[period] = [r for r in quarter_rows if r.get("period") == period]
+        _save_backtest_checkpoint(checkpoint_path, completed)
+        _status(f"💾 **{period} 백테스트 결과 저장 완료** · 다음 분기로 진행합니다.")
 
     bt = pd.DataFrame(quarter_rows)
     if bt.empty:
@@ -1589,6 +1701,8 @@ with main_backtest_tab:
         bt_market_neutral = st.checkbox("SPY 대비 상대수익률 적용", value=True, key="bt_market_neutral")
     with bt_c3:
         bt_run = st.button("🧪 백테스트 실행", type="primary", key="run_backtest")
+
+    st.caption("💡 과거 시세는 ticker별 디스크 캐시, 백테스트는 분기별 중간저장을 사용합니다. 휴대폰 새로고침 후 다시 실행해도 완료된 분기는 재계산하지 않습니다.")
 
     if bt_run:
         if not funds_to_analyze:

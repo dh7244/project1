@@ -404,7 +404,8 @@ with st.expander(f"🏛️ 분석 대상 기관 관리 (총 {len(st.session_stat
 
 col1, col2, col3, col4 = st.columns([1.2, 1, 1, 1.2])
 with col1:
-    top_n = st.slider("최종 출력 종목 수 (상위 N개)", min_value=20, max_value=300, value=50, step=10)
+    # 💡 기본값 300, 최댓값 500 반영
+    top_n = st.slider("최종 출력 종목 수 (상위 N개)", min_value=20, max_value=500, value=300, step=10)
 with col2:
     sec_neutral = st.checkbox("섹터 중립화 적용", value=False)
 with col3:
@@ -802,7 +803,6 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         # --- 종목 상세 분석 및 기여도 분해 영역 ---
         st.subheader(f"🔍 [{current_tk}] {sel_row['Name']} 심층 팩터 분석 & 매수 기관")
         
-        # 상단 핵심 기여도 메트릭 카드
         col_m1, col_m2, col_m3 = st.columns([1.2, 1, 1])
         with col_m1:
             st.metric("종합 SML 점수", f"{sel_row['SML_Score']:.1f} 점", sel_row['Signal'])
@@ -811,7 +811,6 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         with col_m3:
             st.metric("📉 가격 소외도 (45% 축)", f"{sel_row['Lag_Score']:.1f} 점", f"기여: +{sel_row['Lag_Contrib']:.1f}점 / 45.0")
 
-        # 수급 주도 vs 바닥 반등 밸런스 바
         inst_ratio = int((sel_row['Inst_Contrib'] / max(sel_row['SML_Score'], 0.1)) * 100)
         lag_ratio = 100 - inst_ratio
         st.caption(f"⚖️ **상승 모멘텀 원천 분석**: 수급 주도형 `{inst_ratio}%` vs 바닥 반등형 `{lag_ratio}%`")
@@ -819,7 +818,6 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
 
         with st.expander("📐 SML 점수 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
             st.markdown("**점수 분해 공식**:")
-            # LaTeX 수식을 f-string과 섞지 않고 st.latex로 안전하게 직접 출력
             latex_expr = (
                 r"\text{SML 점수} = (" + f"{sel_row['Inst_Score']:.1f}" + r" \times 0.55) + ("
                 + f"{sel_row['Lag_Score']:.1f}" + r" \times 0.45) = \mathbf{+"

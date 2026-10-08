@@ -327,7 +327,7 @@ def calc_score(df, sector_neutral=False):
     raw_sml = d["Inst_Contrib"] + d["Lag_Contrib"]
     d["SML_Score"] = raw_sml.round(1).fillna(50.0)
 
-    # 💡 [신규] 투자 시그널 판정 로직: 70점 / 55점 기준 + 세부 유형 라벨링
+    # 투자 시그널 판정 로직 (신규 70점 / 55점 기준 + 세부 유형 라벨)
     sigs = []
     for _, r in d.iterrows():
         p_val = r["Price_Val"]
@@ -369,6 +369,7 @@ with st.expander("📖 SML 점수 및 퀀트 팩터(M1·M2·M3) 상세 가이드
         """
         ### 1. SML 점수(Smart Money Lag Score)란?
         * **개념**: **"스마트머니(월가 대형 기관)의 집중 매수가 유입되었음에도, 주가는 아직 오르지 않고 뒤처진(Lag) 저평가 종목"**을 발굴하는 퀀트 앙상블 스코어입니다 (100점 만점).
+        * **핵심 가설**: 거대 자본을 굴리는 전문 기관들은 장기간에 걸쳐 분할 매집하며, 공시 이후 시장의 관심이 쏠리면서 뒤늦게 주가가 제자리를 찾아가는 '시차 반등(Lag Reversal)' 현상을 노립니다.
         * **종합 공식**: 
           $$\\text{SML 점수} = \\underbrace{(\\text{수급 점수} \\times 0.55)}_{\\text{스마트머니 수급 기여도 (최대 55점)}} + \\underbrace{(\\text{소외 점수} \\times 0.45)}_{\\text{가격 저평가/래깅 기여도 (최대 45점)}}$$
         * **앙상블 서브 모델 가중치**: $0.40 \\times M_1 + 0.35 \\times M_2 + 0.25 \\times M_3$
@@ -817,11 +818,16 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         st.progress(min(max(inst_ratio / 100.0, 0.0), 1.0))
 
         with st.expander("📐 SML 점수 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
-            calc_text = (
-                "**점수 분해 공식**:\n\n"
-                f"$$\\text{{SML 점수}} = ({sel_row['Inst_Score']:.1f} \\times 0.55) + ({sel_row['Lag_Score']:.1f} \\times 0.45) = "                 f"\\mathbf{{+{sel_row['Inst_Contrib']:.1f}\\text{{점 (수급)}}} + \\mathbf{{+{sel_row['Lag_Contrib']:.1f}\\text{{점 (소외)}}} = "                 f"\\mathbf{{{sel_row['SML_Score']:.1f}\\text{{점}}}}$$"
+            st.markdown("**점수 분해 공식**:")
+            # LaTeX 수식을 f-string과 섞지 않고 st.latex로 안전하게 직접 출력
+            latex_expr = (
+                r"\text{SML 점수} = (" + f"{sel_row['Inst_Score']:.1f}" + r" \times 0.55) + ("
+                + f"{sel_row['Lag_Score']:.1f}" + r" \times 0.45) = \mathbf{+"
+                + f"{sel_row['Inst_Contrib']:.1f}" + r"\text{점(수급)}} + \mathbf{+"
+                + f"{sel_row['Lag_Contrib']:.1f}" + r"\text{점(소외)}} = \mathbf{"
+                + f"{sel_row['SML_Score']:.1f}" + r"\text{점}}"
             )
-            st.markdown(calc_text)
+            st.latex(latex_expr)
 
             b_col1, b_col2 = st.columns(2)
             with b_col1:

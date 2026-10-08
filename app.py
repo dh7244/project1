@@ -316,8 +316,7 @@ def calc_score(df, sector_neutral=False):
     z_comp = 0.55 * z_inst + 0.45 * z_lag
     d["M3"] = (stats.norm.cdf(z_comp) * 100.0).round(1)
 
-    # 💡 [신규] 기관수급(55% 축) vs 가격소외도(45% 축) 기여도 분리 계산
-    # 대형주 배분: M1(40%) + M2(35%) + M3(25%)
+    # 기관수급(55% 축) vs 가격소외도(45% 축) 분리 계산 (M1 40% : M2 35% : M3 25%)
     d["Inst_Score"] = (0.40 * m1_inst + 0.35 * m2_inst + 0.25 * m3_inst).round(1)
     d["Lag_Score"] = (0.40 * m1_lag + 0.35 * m2_lag + 0.25 * m3_lag).round(1)
 
@@ -361,6 +360,7 @@ with st.expander("📖 SML 점수 및 퀀트 팩터(M1·M2·M3) 상세 가이드
         """
         ### 1. SML 점수(Smart Money Lag Score)란?
         * **개념**: **"스마트머니(월가 대형 기관)의 집중 매수가 유입되었음에도, 주가는 아직 오르지 않고 뒤처진(Lag) 저평가 종목"**을 발굴하는 퀀트 앙상블 스코어입니다 (100점 만점).
+        * **핵심 가설**: 거대 자본을 굴리는 전문 기관들은 장기간에 걸쳐 분할 매집하며, 공시 이후 시장의 관심이 쏠리면서 뒤늦게 주가가 제자리를 찾아가는 '시차 반등(Lag Reversal)' 현상을 노립니다.
         * **종합 공식 (대형주 우대 배분)**: 
           $$\\text{SML 점수} = \\underbrace{(\\text{수급 점수} \\times 0.55)}_{\\text{스마트머니 수급 기여도 (최대 55점)}} + \\underbrace{(\\text{소외 점수} \\times 0.45)}_{\\text{가격 저평가/래깅 기여도 (최대 45점)}}$$
         * **앙상블 서브 모델 가중치**: $0.40 \\times M_1 + 0.35 \\times M_2 + 0.25 \\times M_3$
@@ -798,7 +798,6 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         # --- 종목 상세 분석 및 기여도 분해 영역 ---
         st.subheader(f"🔍 [{current_tk}] {sel_row['Name']} 심층 팩터 분석 & 매수 기관")
         
-        # 💡 상단 핵심 기여도 메트릭 카드 3분할
         col_m1, col_m2, col_m3 = st.columns([1.2, 1, 1])
         with col_m1:
             st.metric("종합 SML 점수", f"{sel_row['SML_Score']:.1f} 점", sel_row['Signal'])
@@ -807,18 +806,24 @@ if "result_df" in st.session_state and not st.session_state["result_df"].empty:
         with col_m3:
             st.metric("📉 가격 소외도 (45% 축)", f"{sel_row['Lag_Score']:.1f} 점", f"기여: +{sel_row['Lag_Contrib']:.1f}점 / 45.0")
 
-        # 💡 수급 주도 vs 바닥 반등 밸런스 바
         inst_ratio = int((sel_row['Inst_Contrib'] / max(sel_row['SML_Score'], 0.1)) * 100)
         lag_ratio = 100 - inst_ratio
         st.caption(f"⚖️ **상승 모멘텀 원천 분석**: 수급 주도형 `{inst_ratio}%` vs 바닥 반등형 `{lag_ratio}%`")
         st.progress(min(max(inst_ratio / 100.0, 0.0), 1.0))
 
         with st.expander("📐 SML 점수 계산 요소별 비중 및 기여도 (Factor Breakdown)", expanded=True):
+            # 💡 문법 오류가 발생하지 않도록 format 문자열로 안전하게 처리
             st.markdown(
-                f"""
-                **점수 분해 공식**:  
-                $$\\text{{SML 점수}} = \\underbrace{{({sel_row['Inst_Score']:.1f} \\times 0.55)}_{{\\mathbf{{+{sel_row['Inst_Contrib']:.1f}\\text{{점 (수급 기여)}}}}}} + \\underbrace{{({sel_row['Lag_Score']:.1f} \\times 0.45)}_{{\\mathbf{{+{sel_row['Lag_Contrib']:.1f}\\text{{점 (소외 기여)}}}}}} = \\mathbf{{{sel_row['SML_Score']:.1f}\\text{{점}}}}$$
                 """
+                **점수 분해 공식**:  
+                $$\\text{{SML 점수}} = ({inst_s:.1f} \\times 0.55) + ({lag_s:.1f} \\times 0.45) = \\mathbf{{{inst_c:+.1f}\\text{{점 (수급)}}} \\mathbf{{{lag_c:+.1f}\\text{{점 (소외)}}} = \\mathbf{{{tot:.1f}\\text{{점}}}$$
+                """.format(
+                    inst_s=sel_row["Inst_Score"],
+                    lag_s=sel_row["Lag_Score"],
+                    inst_c=sel_row["Inst_Contrib"],
+                    lag_c=sel_row["Lag_Contrib"],
+                    tot=sel_row["SML_Score"]
+                )
             )
             b_col1, b_col2 = st.columns(2)
             with b_col1:
